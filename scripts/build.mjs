@@ -6,7 +6,7 @@
 //
 //   node scripts/build.mjs [--skip-install] [--no-installer]
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -25,9 +25,17 @@ if (process.versions.node !== wanted) {
   throw new Error(`VS Code ${readFileSync(join(source, ".jesutobits-prepared"), "utf8").trim()} builds with Node ${wanted}; this is ${process.versions.node}`);
 }
 
+const env = { ...process.env };
+const signtool = findSigntool();
+if (signtool) {
+  // Packaging strips old signatures from bundled binaries with signtool (it signs nothing).
+  env.PATH = `${dirname(signtool)};${env.PATH ?? ""}`;
+  console.log(`using ${signtool}`);
+}
+
 const run = (command) => {
   console.log(`\n> ${command}`);
-  execSync(command, { cwd: source, stdio: "inherit" });
+  execSync(command, { cwd: source, stdio: "inherit", env });
 };
 
 if (!args["skip-install"]) run("npm ci");
@@ -37,3 +45,24 @@ if (!args["no-installer"]) {
   run("npm run gulp vscode-win32-x64-user-setup");
 }
 console.log(`\nBuilt ${join(root, "VSCode-win32-x64")}`);
+
+/** signtool.exe from PATH, or else from the newest Windows SDK (it is rarely on PATH). */
+function findSigntool() {
+  try {
+    execSync("where signtool.exe", { stdio: "ignore" });
+    return undefined;
+  } catch {
+    // Not on PATH: look in the Windows SDK.
+  }
+  const programFiles = process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
+  const kits = join(programFiles, "Windows Kits", "10", "bin");
+  if (!existsSync(kits)) return undefined;
+  const versions = readdirSync(kits)
+    .filter((name) => /^\d+\.\d+\.\d+\.\d+$/.test(name))
+    .sort((a, b) => b.localeCompare(a, "en", { numeric: true }));
+  for (const version of versions) {
+    const candidate = join(kits, version, "x64", "signtool.exe");
+    if (existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}
