@@ -1,12 +1,14 @@
-# Builds Jesutobits for Windows x64: VS Code at upstream.json's tag, patched and rebranded
-# (scripts/prepare.mjs), packaged with its per-user installer (scripts/build.mjs).
-#
-# The Jesutobits extension is not included yet: it lives in a private repository, and
-# shipping it in public artifacts waits for the licence decision (jesutobits ROADMAP Q2).
+# Builds Jesutobits for Windows x64: the Jesutobits extension from the jesutobits repository,
+# built in, and VS Code at upstream.json's tag, patched and rebranded (scripts/prepare.mjs),
+# packaged with its per-user installer (scripts/build.mjs).
 name: Build
 
 on:
   workflow_dispatch:
+    inputs:
+      jesutobits_ref:
+        description: Branch, tag or commit of divinefavourak/jesutobits to build in
+        default: pivot/code-oss
   push:
     branches: [main]
     paths-ignore: ["**.md"]
@@ -26,16 +28,31 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      # The Jesutobits extension: runtime, agent panel, preview launcher (ADR-0015).
+      - uses: actions/checkout@v7
+        with:
+          repository: divinefavourak/jesutobits
+          ref: ${{ inputs.jesutobits_ref || 'pivot/code-oss' }}
+          path: jesutobits
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: jesutobits/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: jesutobits/.nvmrc
+      - name: Build the Jesutobits extension
+        working-directory: jesutobits
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build:packages
+          pnpm build:extension
+
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
-      # Any recent Node can prepare; the build then switches to vscode/.nvmrc.
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
       - name: Prepare the source
-        run: node scripts/prepare.mjs
+        run: node scripts/prepare.mjs --extension jesutobits/apps/vscode-extension
 
       - uses: actions/setup-node@v7
         with:
