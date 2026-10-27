@@ -32,7 +32,7 @@ CI (`.github/workflows/build.yml`) builds the rebranded app without the extensio
 
 - Name, data folders (`.jesutobits`), Windows app IDs and URL protocol (`jesutobits://`) are Jesutobits' own, so it installs next to VS Code without sharing anything.
 - Extensions come from [Open VSX](https://open-vsx.org). The Visual Studio Marketplace and Microsoft's proprietary extensions are not available to forks.
-- No telemetry endpoint, no update service, no Microsoft voice service, no Copilot defaults.
+- No telemetry endpoint, no update service, no Microsoft voice service, and no Copilot extension (it cannot be built outside Microsoft). VS Code's chat UI and its GitHub sign-in prompts are still visible; hiding them is planned (`PATCHES.md`).
 - The Jesutobits extension is built in (when prepared with `--extension`).
 
 Code-OSS is MIT-licensed by Microsoft (`vscode/LICENSE.txt` in every build). "Visual Studio Code" and its logo are Microsoft trademarks and are not used here.

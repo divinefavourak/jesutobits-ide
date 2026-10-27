@@ -85,7 +85,11 @@ function applyPatches() {
 
 function mergeProduct() {
   const file = join(source, "product.json");
-  const product = JSON.parse(readFileSync(file, "utf8"));
+  // Always merge onto upstream's original, so a re-run never builds on an earlier merge (a key
+  // removed by an older override would otherwise stay removed).
+  const original = join(source, "product.upstream.json");
+  if (!existsSync(original)) cpSync(file, original);
+  const product = JSON.parse(readFileSync(original, "utf8"));
   const overrides = JSON.parse(readFileSync(join(root, "product.overrides.json"), "utf8"));
   for (const [key, value] of Object.entries(overrides)) {
     if (key === "$comment") continue;

@@ -1,5 +1,5 @@
 {
-  "$comment": "Merged over upstream vscode/product.json by scripts/prepare.mjs. Keys set to null are removed. Jesutobits ADR-0015: own identity, Open VSX, no Microsoft endpoints, no telemetry, no updates.",
+  "$comment": "Merged over upstream vscode/product.json by scripts/prepare.mjs. Keys set to null are removed. Jesutobits ADR-0015: own identity, Open VSX, no Microsoft endpoints, no telemetry, no updates. Never null a key VS Code reads unconditionally: removing defaultChatAgent left the window blank (first-run onboarding throws), removing builtInExtensionsEnabledWithAutoUpdates broke extension scanning. Give such keys empty values instead.",
   "nameShort": "Jesutobits",
   "nameLong": "Jesutobits",
   "applicationName": "jesutobits",
@@ -32,7 +32,6 @@
     "latestUrlTemplate": "https://open-vsx.org/vscode/gallery/{publisher}/{name}/latest"
   },
   "voiceWsUrl": null,
-  "defaultChatAgent": null,
-  "trustedExtensionAuthAccess": null,
-  "builtInExtensionsEnabledWithAutoUpdates": null
+  "trustedExtensionAuthAccess": {},
+  "builtInExtensionsEnabledWithAutoUpdates": []
 }
