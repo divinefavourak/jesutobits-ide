@@ -27,7 +27,7 @@ node scripts/build.mjs                                            # VSCode-win32
 
 For the extension, run `pnpm build:packages && pnpm build:extension` in the `jesutobits` repository first. `prepare.mjs --clean` starts again from a fresh download.
 
-CI (`.github/workflows/build.yml`) builds the rebranded app without the extension and uploads the installer as an artifact.
+CI (`.github/workflows/build.yml`) builds the Jesutobits extension from the `jesutobits` repository (the `pivot/code-oss` branch until it is merged; choose another ref when running it by hand), builds the app with it built in, and uploads the per-user installer as an artifact.
 
 ## What is different from Code-OSS
 
