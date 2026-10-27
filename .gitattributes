@@ -1,0 +1,3 @@
+* text=auto eol=lf
+# Patches must apply byte for byte to the LF upstream sources.
+*.patch -text
