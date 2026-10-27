@@ -122,7 +122,7 @@ function copyExtension(extensionDir) {
   const target = join(source, "extensions", "jesutobits");
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
-  for (const part of ["dist", "media"]) {
+  for (const part of ["dist", "media", "themes"].filter((p) => existsSync(join(extensionDir, p)))) {
     cpSync(join(extensionDir, part), join(target, part), {
       recursive: true,
       filter: (path) => !path.endsWith(".map"),
