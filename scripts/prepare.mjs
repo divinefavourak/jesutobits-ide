@@ -1,7 +1,8 @@
 // Prepares vscode/ for a Jesutobits build (VSCodium-style: this repository holds only the
 // differences). Steps, all idempotent from a clean source tree:
 //   1. Download the upstream source for upstream.json's tag (GitHub tarball) into vscode/.
-//   2. Apply patches/*.patch in name order (each listed in PATCHES.md).
+//   2. Apply patches/*.patch in name order (each listed in PATCHES.md), and remove the
+//      Copilot extension, which only Microsoft can build.
 //   3. Merge product.overrides.json over vscode/product.json (null removes a key).
 //   4. Optionally copy a built Jesutobits extension into vscode/extensions/jesutobits.
 //
@@ -39,6 +40,9 @@ if (existsSync(marker)) {
 } else {
   fetchSource();
   applyPatches();
+  // Copilot cannot be built outside Microsoft (its build mixes in the internal vscode-capi);
+  // patches/001 lets the build run without it. Jesutobits brings its own agent.
+  rmSync(join(source, "extensions", "copilot"), { recursive: true, force: true });
 }
 mergeProduct();
 if (args.extension) copyExtension(resolve(args.extension));
@@ -69,10 +73,13 @@ function applyPatches() {
   if (!existsSync(dir)) return;
   for (const name of readdirSync(dir).filter((file) => file.endsWith(".patch")).sort()) {
     console.log(`applying ${name}`);
-    execFileSync("git", ["apply", "--whitespace=nowarn", join(dir, name)], {
-      cwd: source,
-      stdio: "inherit",
-    });
+    // From the repository root with --directory: run inside vscode/ (a folder of this
+    // repository), git apply would silently skip every path and report success.
+    execFileSync(
+      "git",
+      ["apply", "--directory=vscode", "--whitespace=nowarn", "--verbose", `patches/${name}`],
+      { cwd: root, stdio: "inherit" },
+    );
   }
 }
 

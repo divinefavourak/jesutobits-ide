@@ -6,7 +6,7 @@ Branding and endpoints are not patches; they are data in `product.overrides.json
 
 | Patch | What | Why |
 |---|---|---|
-| (none yet) | | |
+| `001-build-without-copilot.patch` | Drops `extensions/copilot` from the postinstall folders (`build/npm/dirs.ts`) and skips the Copilot ripgrep shim step when no Copilot extension was packaged (`build/gulpfile.vscode.ts`). `prepare.mjs` deletes `extensions/copilot`. | Copilot's build mixes in Microsoft's internal `vscode-capi` repository, so forks cannot build it, and without it packaging failed in `prepareBuiltInCopilotRipgrepShim`. Jesutobits brings its own agent |
 
 Planned (ADR-0015, pivot step 16), each only if a contribution point or setting cannot do it:
 

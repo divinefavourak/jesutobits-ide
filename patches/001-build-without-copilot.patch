@@ -1,0 +1,27 @@
+diff --git a/build/gulpfile.vscode.ts b/build/gulpfile.vscode.ts
+index accd13d..801a850 100644
+--- a/build/gulpfile.vscode.ts
++++ b/build/gulpfile.vscode.ts
+@@ -558,6 +558,10 @@ function prepareCopilotRipgrepShimTask(platform: string, arch: string, destinati
+ 		const appNodeModulesDir = path.join(appBase, 'node_modules.asar.unpacked');
+ 
+ 		const builtInCopilotExtensionDir = path.join(appBase, 'extensions', 'copilot');
++		// Jesutobits: builds without Copilot (its build needs Microsoft's internal vscode-capi).
++		if (!fs.existsSync(builtInCopilotExtensionDir)) {
++			return;
++		}
+ 		prepareBuiltInCopilotRipgrepShim(platform, arch, builtInCopilotExtensionDir, appNodeModulesDir);
+ 	};
+ }
+diff --git a/build/npm/dirs.ts b/build/npm/dirs.ts
+index 7bc3363..89f8708 100644
+--- a/build/npm/dirs.ts
++++ b/build/npm/dirs.ts
+@@ -15,7 +15,6 @@ export const dirs = [
+ 	'build/vite',
+ 	'extensions',
+ 	'extensions/configuration-editing',
+-	'extensions/copilot',
+ 	'extensions/css-language-features',
+ 	'extensions/css-language-features/server',
+ 	'extensions/debug-auto-launch',
