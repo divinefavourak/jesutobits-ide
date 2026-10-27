@@ -1,0 +1,55 @@
+# Builds Jesutobits for Windows x64: VS Code at upstream.json's tag, patched and rebranded
+# (scripts/prepare.mjs), packaged with its per-user installer (scripts/build.mjs).
+#
+# The Jesutobits extension is not included yet: it lives in a private repository, and
+# shipping it in public artifacts waits for the licence decision (jesutobits ROADMAP Q2).
+name: Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md"]
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    name: Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Any recent Node can prepare; the build then switches to vscode/.nvmrc.
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: Prepare the source
+        run: node scripts/prepare.mjs
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: vscode/.nvmrc
+          cache: npm
+          cache-dependency-path: vscode/package-lock.json
+      - name: Build
+        run: node scripts/build.mjs
+        env:
+          # Electron and other GitHub release downloads are rate-limited without a token.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jesutobits-win32-x64-user-setup
+          path: vscode/.build/win32-x64/user-setup/*.exe
+          retention-days: 14

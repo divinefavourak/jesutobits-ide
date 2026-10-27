@@ -1,0 +1,6 @@
+# The upstream source, downloaded and patched by scripts/prepare.mjs
+vscode/
+.cache/
+node_modules/
+# Build output (scripts/build.mjs)
+VSCode-win32-x64/
