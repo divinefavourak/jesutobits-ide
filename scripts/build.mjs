@@ -26,6 +26,9 @@ if (process.versions.node !== wanted) {
 }
 
 const env = { ...process.env };
+// The source is a tarball, not a Git checkout, so the build cannot ask Git for the commit.
+// The installer, update paths and `product.json` use it.
+env.BUILD_SOURCEVERSION = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8")).commit;
 const signtool = findSigntool();
 if (signtool) {
   // Packaging strips old signatures from bundled binaries with signtool (it signs nothing).

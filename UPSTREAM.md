@@ -2,7 +2,7 @@
 
 Jesutobits follows VS Code's stable releases, within a month of each one (ROADMAP Q14).
 
-1. Set the new tag in `upstream.json` (stable tags look like `1.144.0`; list them with `git ls-remote --tags https://github.com/microsoft/vscode 'refs/tags/1.*'`).
+1. Set the new tag in `upstream.json` (stable tags look like `1.144.0`; list them with `git ls-remote --tags https://github.com/microsoft/vscode 'refs/tags/1.*'`) and its commit (`gh api repos/microsoft/vscode/git/ref/tags/<tag> -q .object.sha`). The build passes the commit as `BUILD_SOURCEVERSION`, since a tarball has no Git history.
 2. `node scripts/prepare.mjs --clean`. If a patch no longer applies, redo it against the new source (`PATCHES.md`, "Making a patch") and replace the file.
 3. Compare the new upstream `product.json` with the last one: any new key that names a Microsoft service, telemetry, update or AI endpoint gets an entry in `product.overrides.json` (set to `null` or to Jesutobits' value).
 4. Check the new `.nvmrc` and build prerequisites (README.md), and the extension's `engines.vscode` in the `jesutobits` repository.

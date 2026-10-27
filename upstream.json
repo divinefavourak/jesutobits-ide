@@ -1,5 +1,6 @@
 {
-  "$comment": "The VS Code release this build follows (UPSTREAM.md). Bump the tag, run prepare, fix any patch that no longer applies.",
+  "$comment": "The VS Code release this build follows (UPSTREAM.md). Bump the tag and its commit together, run prepare, fix any patch that no longer applies.",
   "repository": "microsoft/vscode",
-  "tag": "1.143.1"
+  "tag": "1.143.1",
+  "commit": "e646868227c3e3a9e3f24277c8c7220be42c0be7"
 }
