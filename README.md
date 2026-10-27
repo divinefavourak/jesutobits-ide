@@ -9,6 +9,7 @@ This repository holds only the differences from upstream, in the style of VSCodi
 | `upstream.json` | The VS Code release this build follows |
 | `product.overrides.json` | Jesutobits' identity, Open VSX as the extension gallery, Microsoft-only keys removed |
 | `patches/*.patch` | Changes to the VS Code source, each explained in `PATCHES.md` |
+| `branding/` | The "J" icons and logo files, at the paths they replace in the source |
 | `scripts/prepare.mjs` | Downloads the upstream source, applies the patches, merges `product.json`, optionally adds the Jesutobits extension |
 | `scripts/build.mjs` | `npm ci` and the gulp tasks for the Windows app and its installer |
 
@@ -32,7 +33,8 @@ CI (`.github/workflows/build.yml`) builds the rebranded app without the extensio
 
 - Name, data folders (`.jesutobits`), Windows app IDs and URL protocol (`jesutobits://`) are Jesutobits' own, so it installs next to VS Code without sharing anything.
 - Extensions come from [Open VSX](https://open-vsx.org). The Visual Studio Marketplace and Microsoft's proprietary extensions are not available to forks.
-- No telemetry endpoint, no update service, no Microsoft voice service, and no Copilot extension (it cannot be built outside Microsoft). VS Code's chat UI and its GitHub sign-in prompts are still visible; hiding them is planned (`PATCHES.md`).
+- The "J" icon everywhere: the app, the installer, the title bar and the empty-editor watermark.
+- No telemetry endpoint, no update service, no Microsoft voice service, and no Copilot extension (it cannot be built outside Microsoft). Copilot's chat and GitHub sign-in prompts are hidden by default (`chat.disableAIFeatures`).
 - The Jesutobits extension is built in (when prepared with `--extension`).
 
 Code-OSS is MIT-licensed by Microsoft (`vscode/LICENSE.txt` in every build). "Visual Studio Code" and its logo are Microsoft trademarks and are not used here.
