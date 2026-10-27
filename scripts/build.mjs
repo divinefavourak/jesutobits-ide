@@ -29,7 +29,9 @@ const env = { ...process.env };
 const signtool = findSigntool();
 if (signtool) {
   // Packaging strips old signatures from bundled binaries with signtool (it signs nothing).
-  env.PATH = `${dirname(signtool)};${env.PATH ?? ""}`;
+  // Windows spells the variable `Path`; update whichever name exists, never add a second.
+  const pathKey = Object.keys(env).find((key) => key.toUpperCase() === "PATH") ?? "PATH";
+  env[pathKey] = `${dirname(signtool)};${env[pathKey] ?? ""}`;
   console.log(`using ${signtool}`);
 }
 
