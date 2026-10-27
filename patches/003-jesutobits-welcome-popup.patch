@@ -678,10 +678,10 @@ index 0000000..c0a511b
 +}
 diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css b/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
 new file mode 100644
-index 0000000..b7860bf
+index 0000000..27df844
 --- /dev/null
 +++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,295 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Jesutobits. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -699,6 +699,9 @@ index 0000000..b7860bf
 +	flex-direction: column;
 +	gap: 10px;
 +	overflow-y: auto;
++	/* A plain overflow area gets the browser's (white) scrollbar; match the theme's. */
++	scrollbar-width: thin;
++	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
 +}
 +
 +.jesutobits-onboarding .onboarding-a-section-label {
