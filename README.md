@@ -40,7 +40,7 @@ node scripts/build.mjs --target linux-x64                         # or name the 
 
 For the extension, run `pnpm build:packages && pnpm build:extension` in the `jesutobits` repository first. `prepare.mjs --clean` starts again from a fresh download.
 
-CI (`.github/workflows/build.yml`) builds the Jesutobits extension from the `jesutobits` repository (the `pivot/code-oss` branch until it is merged; choose another ref when running it by hand), builds the app with it built in, and uploads each platform's packages as an artifact (`jesutobits-<target>`). The four platforms build in parallel and one failing does not stop the others.
+CI (`.github/workflows/build.yml`) builds the Jesutobits extension from the `jesutobits` repository (the `pivot/code-oss` branch until it is merged; choose another ref when running it by hand), builds the app with it built in, and uploads each package as its own artifact (`jesutobits-windows-x64-setup`, `jesutobits-linux-x64-deb`, `-rpm`, `-tar`, `jesutobits-darwin-<arch>-dmg`, `-zip`). The four platforms build in parallel and one failing does not stop the others.
 
 ## What is different from Code-OSS
 
