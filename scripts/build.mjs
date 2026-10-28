@@ -16,7 +16,7 @@
 //
 //   node scripts/build.mjs [--target <target>] [--skip-install] [--no-installer]
 import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -132,14 +132,16 @@ function buildMac() {
   const zip = join(dist, `${name}.zip`);
   run(`ditto -c -k --sequesterRsrc --keepParent '${bundle}' '${zip}'`);
   console.log(`Package: ${zip}`);
-  const dmgDir = join(source, ".build", "darwin", "dmg");
-  mkdirSync(dmgDir, { recursive: true });
-  run(`node build/darwin/create-dmg.ts '${root}' '${dmgDir}'`);
-  const dmg = join(dmgDir, `VSCode-darwin-${arch}.dmg`);
-  run(`python3 build/darwin/patch-dmg.py '${dmg}' resources/darwin/disk.icns`);
-  const finalDmg = join(dist, `${name}.dmg`);
-  renameSync(dmg, finalDmg);
-  console.log(`Package: ${finalDmg}`);
+  // A plain disk image: the app and a shortcut to Applications to drag it onto. VS Code's
+  // create-dmg.ts names the volume after its own release quality ("VS Code", "Code OSS").
+  const staging = join(source, ".build", "darwin", "dmg");
+  rmSync(staging, { recursive: true, force: true });
+  mkdirSync(staging, { recursive: true });
+  run(`ditto '${bundle}' '${join(staging, "Jesutobits.app")}'`);
+  run(`ln -s /Applications '${join(staging, "Applications")}'`);
+  const dmg = join(dist, `${name}.dmg`);
+  run(`hdiutil create -volname Jesutobits -srcfolder '${staging}' -ov -format UDZO '${dmg}'`);
+  console.log(`Package: ${dmg}`);
 }
 
 /** Moves the one file with `extension` in `folder` to `destination`. */
