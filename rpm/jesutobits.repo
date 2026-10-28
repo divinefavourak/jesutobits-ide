@@ -1,0 +1,9 @@
+[jesutobits]
+name=Jesutobits
+baseurl=https://divinefavourak.github.io/jesutobits-ide/rpm
+enabled=1
+autorefresh=1
+type=rpm-md
+gpgcheck=1
+repo_gpgcheck=1
+gpgkey=https://divinefavourak.github.io/jesutobits-ide/jesutobits.asc
