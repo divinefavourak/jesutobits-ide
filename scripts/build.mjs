@@ -1,12 +1,12 @@
 // Builds Jesutobits for Windows x64 from a prepared vscode/ (scripts/prepare.mjs):
 //   VSCode-win32-x64/                          the portable app
-//   vscode/.build/win32-x64/user-setup/*.exe   the per-user installer (Inno Setup)
+//   vscode/.build/win32-x64/user-setup/JesutobitsUserSetup-x64-<tag>.exe   the per-user installer
 // Needs the Node version in vscode/.nvmrc, Python 3 and the MSVC build tools with the
 // Spectre-mitigated libraries (README.md).
 //
 //   node scripts/build.mjs [--skip-install] [--no-installer]
 import { execSync } from "node:child_process";
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -48,6 +48,13 @@ run("npm run gulp vscode-win32-x64-min");
 if (!args["no-installer"]) {
   run("npm run gulp vscode-win32-x64-inno-updater");
   run("npm run gulp vscode-win32-x64-user-setup");
+  // VS Code's Inno Setup script names its output VSCodeSetup.exe (build/win32/code.iss); the
+  // installer does not depend on its file name, so it is renamed here rather than patched.
+  const setupDir = join(source, ".build", "win32-x64", "user-setup");
+  const { tag } = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8"));
+  const installer = join(setupDir, `JesutobitsUserSetup-x64-${tag}.exe`);
+  renameSync(join(setupDir, "VSCodeSetup.exe"), installer);
+  console.log(`Installer: ${installer}`);
 }
 console.log(`\nBuilt ${join(root, "VSCode-win32-x64")}`);
 
