@@ -1,9 +1,9 @@
 diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsAccount.ts b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsAccount.ts
 new file mode 100644
-index 0000000..3aafea4
+index 0000000..bdb04ca
 --- /dev/null
 +++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsAccount.ts
-@@ -0,0 +1,437 @@
+@@ -0,0 +1,441 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Jesutobits. Licensed under the MIT License.
 + *--------------------------------------------------------------------------------------------*/
@@ -131,7 +131,11 @@ index 0000000..3aafea4
 +		this.info = undefined;
 +		this.checking = this.profile.connected;
 +		this.renderHeroAgain();
-+		this.redrawOpenRouterPage();
++		// Every page may show the profile; draw the open one again now that it is known.
++		if (this.isOpen) {
++			this.renderPage();
++			this.focusPage();
++		}
 +		if (this.profile.connected) {
 +			this.info = await this.query<IAccountInfo>(JesutobitsCommand.Account);
 +			this.checking = false;
@@ -443,10 +447,10 @@ index 0000000..3aafea4
 +registerWorkbenchContribution2(JesutobitsAvatarContribution.ID, JesutobitsAvatarContribution, WorkbenchPhase.BlockStartup);
 diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsModal.ts b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsModal.ts
 new file mode 100644
-index 0000000..47d4ed6
+index 0000000..3bb3f8d
 --- /dev/null
 +++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsModal.ts
-@@ -0,0 +1,652 @@
+@@ -0,0 +1,654 @@
 +/*---------------------------------------------------------------------------------------------
 + *  Copyright (c) Jesutobits. Licensed under the MIT License.
 + *  Built on Microsoft's OnboardingVariationA (MIT) in this folder.
@@ -705,7 +709,9 @@ index 0000000..47d4ed6
 +			}
 +		}
 +		if (this.backButton) {
-+			this.backButton.style.visibility = copy.freeNavigation || this.pageIndex === 0 ? 'hidden' : '';
++			// With free navigation there is no Back at all; on a first step it keeps its place.
++			this.backButton.style.display = copy.freeNavigation ? 'none' : '';
++			this.backButton.style.visibility = this.pageIndex === 0 ? 'hidden' : '';
 +		}
 +		if (this.primaryButton) {
 +			clearNode(this.primaryButton);
@@ -1023,7 +1029,7 @@ index 0000000..47d4ed6
 +		return [...nav, close, ...page, ...footer].filter(element => element && this.isTabbable(element));
 +	}
 +
-+	private focusPage(): void {
++	protected focusPage(): void {
 +		const first = this.pageFocusable.find(element => !element.classList.contains('jesutobits-modal-nav-item') && this.isTabbable(element));
 +		(first ?? this.primaryButton ?? this.closeButton)?.focus();
 +	}
@@ -1915,7 +1921,7 @@ index 86a770f..36b108e 100644
  	}
  }
 diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css b/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
-index 7a75e6e..a2d3160 100644
+index 7a75e6e..96faac8 100644
 --- a/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
 +++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
 @@ -2,80 +2,496 @@
@@ -2146,10 +2152,8 @@ index 7a75e6e..a2d3160 100644
 -	margin-top: 6px;
 +.jesutobits-modal-art {
 +	margin-bottom: 18px;
- }
- 
--/* Option cards: VS Code's AI-preference cards, made compact enough for two groups a step. */
--.jesutobits-onboarding .jesutobits-choices .onboarding-a-ai-pref-card {
++}
++
 +.jesutobits-modal .jesutobits-modal-title {
 +	margin: 0 0 12px;
 +	font-size: 34px;
@@ -2226,8 +2230,10 @@ index 7a75e6e..a2d3160 100644
 +	font: inherit;
 +	font-size: 12px;
 +	cursor: pointer;
-+}
-+
+ }
+ 
+-/* Option cards: VS Code's AI-preference cards, made compact enough for two groups a step. */
+-.jesutobits-onboarding .jesutobits-choices .onboarding-a-ai-pref-card {
 +.jesutobits-modal-back:hover {
 +	color: var(--vscode-foreground);
 +}
@@ -2267,8 +2273,9 @@ index 7a75e6e..a2d3160 100644
 +.jesutobits-modal .onboarding-a-btn:disabled {
 +	opacity: 0.5;
 +	cursor: not-allowed;
-+}
-+
+ }
+ 
+-.jesutobits-onboarding .jesutobits-choices .onboarding-a-ai-pref-card-title {
 +/* Radio rows (the design's choices). */
 +.jesutobits-radio-rows {
 +	display: flex;
@@ -2289,9 +2296,8 @@ index 7a75e6e..a2d3160 100644
 +	font: inherit;
 +	text-align: left;
 +	cursor: pointer;
- }
- 
--.jesutobits-onboarding .jesutobits-choices .onboarding-a-ai-pref-card-title {
++}
++
 +.jesutobits-radio-row:hover {
 +	background: var(--vscode-list-hoverBackground);
 +}
@@ -2359,19 +2365,19 @@ index 7a75e6e..a2d3160 100644
 +	font: inherit;
 +	text-align: left;
 +	cursor: pointer;
-+}
-+
+ }
+ 
+-/* Theme cards: a small window in each theme's own colours instead of an image. */
+-.jesutobits-onboarding .jesutobits-theme-grid {
+-	grid-template-columns: repeat(4, minmax(0, 1fr));
 +.jesutobits-theme-card:hover {
 +	background: var(--vscode-list-hoverBackground);
 +}
 +
 +.jesutobits-theme-card.selected {
 +	border-color: var(--jt-accent-strong);
- }
- 
--/* Theme cards: a small window in each theme's own colours instead of an image. */
--.jesutobits-onboarding .jesutobits-theme-grid {
--	grid-template-columns: repeat(4, minmax(0, 1fr));
++}
++
 +.jesutobits-theme-card > .jesutobits-radio {
 +	position: absolute;
 +	top: 14px;
@@ -2387,14 +2393,14 @@ index 7a75e6e..a2d3160 100644
  	padding: 10px;
 +	border-radius: 10px;
 +	box-sizing: border-box;
-+}
-+
-+.jesutobits-theme-preview .side {
-+	width: 26%;
-+	border-radius: 6px;
  }
  
 -.jesutobits-theme-preview > span {
++.jesutobits-theme-preview .side {
++	width: 26%;
++	border-radius: 6px;
++}
++
 +.jesutobits-theme-preview .lines {
  	display: flex;
 +	flex: 1;
@@ -2700,6 +2706,15 @@ index 7a75e6e..a2d3160 100644
  }
  
  /* Buddy, the co-builder (the Studio design's character), in the theme's link colour. */
+@@ -325,3 +859,8 @@
+ .monaco-workbench.monaco-reduce-motion .jesutobits-buddy-star {
+ 	animation: none;
+ }
++
++/* The arrow takes the button's own colour, not the icon colour. */
++.jesutobits-modal .jesutobits-modal-primary .codicon {
++	color: inherit;
++}
 diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/welcomeOnboarding.contribution.ts b/src/vs/workbench/contrib/welcomeOnboarding/browser/welcomeOnboarding.contribution.ts
 index 4923135..4e87846 100644
 --- a/src/vs/workbench/contrib/welcomeOnboarding/browser/welcomeOnboarding.contribution.ts
