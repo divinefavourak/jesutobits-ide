@@ -53,9 +53,10 @@ const env = { ...process.env, VSCODE_ARCH: arch, npm_config_arch: arch };
 // The installer, update paths and `product.json` use it.
 env.BUILD_SOURCEVERSION = commit;
 
-const run = (command, extraEnv = {}) => {
+/** Runs a command in vscode/ (or `cwd`) with the build environment plus `extraEnv`. */
+const run = (command, { cwd = source, extraEnv = {} } = {}) => {
   console.log(`\n> ${command}`);
-  execSync(command, { cwd: source, stdio: "inherit", env: { ...env, ...extraEnv } });
+  execSync(command, { cwd, stdio: "inherit", env: { ...env, ...extraEnv } });
 };
 mkdirSync(dist, { recursive: true });
 /** Where gulp puts the app: next to vscode/. */
@@ -90,7 +91,9 @@ function buildWindows() {
 function buildLinux() {
   if (!args["skip-install"]) {
     // Native modules are built against VS Code's glibc 2.28 sysroot with Chromium's clang
-    // (setup-env.sh), so the app runs on the same distributions as VS Code.
+    // (setup-env.sh), so the app runs on the same distributions as VS Code. setup-env.sh runs
+    // build/ scripts, so build/'s own dependencies come first, as in VS Code's pipeline.
+    run("npm ci", { cwd: join(source, "build") });
     run(
       "bash -c 'set -e; source ./build/azure-pipelines/linux/setup-env.sh; node build/npm/preinstall.ts; npm ci'",
     );
@@ -116,7 +119,7 @@ function buildMac() {
     // node-gyp needs setuptools on Python 3.12; Kerberos must link normally on macOS (VS
     // Code's darwin pipeline does both).
     run("python3 -m pip install --quiet setuptools");
-    run("npm ci", { GYP_DEFINES: "kerberos_use_rtld=false" });
+    run("npm ci", { extraEnv: { GYP_DEFINES: "kerberos_use_rtld=false" } });
   }
   run(`npm run gulp vscode-darwin-${arch}-min`);
   const bundle = join(app, "Jesutobits.app");
