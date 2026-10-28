@@ -1,0 +1,50 @@
+diff --git a/resources/linux/debian/postinst.template b/resources/linux/debian/postinst.template
+index 1ff9d55..86067e2 100644
+--- a/resources/linux/debian/postinst.template
++++ b/resources/linux/debian/postinst.template
+@@ -39,7 +39,9 @@ if hash update-mime-database 2>/dev/null; then
+ 	update-mime-database /usr/share/mime
+ fi
+ 
+-if [ "@@NAME@@" != "code-oss" ]; then
++# Jesutobits: never register Microsoft's VS Code apt repository or its signing key (upstream
++# does for every build not named code-oss). Jesutobits has its own repository.
++if false; then
+ 	# Remove the legacy bin command if this is the stable build
+ 	if [ "@@NAME@@" = "code" ]; then
+ 		rm -f /usr/local/bin/code
+diff --git a/resources/linux/debian/postrm.template b/resources/linux/debian/postrm.template
+index d375e23..dfecb71 100644
+--- a/resources/linux/debian/postrm.template
++++ b/resources/linux/debian/postrm.template
+@@ -27,12 +27,9 @@ if hash update-mime-database 2>/dev/null; then
+ 	update-mime-database /usr/share/mime
+ fi
+ 
+-RET=true
+-if [ -e '/usr/share/debconf/confmodule' ]; then
+-	. /usr/share/debconf/confmodule
+-	db_get @@NAME@@/add-microsoft-repo || true
+-fi
+-if [ "$RET" = "true" ]; then
++# Jesutobits: never remove Microsoft's VS Code apt repository or its key. Jesutobits never
++# adds them (patch 009), so any that exist belong to VS Code or another Microsoft package.
++if false; then
+ 	eval $(apt-config shell APT_SOURCE_PARTS Dir::Etc::sourceparts/d)
+ 	CODE_SOURCE_PART=${APT_SOURCE_PARTS}vscode.sources
+ 	rm -f $CODE_SOURCE_PART
+diff --git a/resources/linux/debian/templates.template b/resources/linux/debian/templates.template
+index 94dbe4a..84a14b2 100644
+--- a/resources/linux/debian/templates.template
++++ b/resources/linux/debian/templates.template
+@@ -1,10 +1,3 @@
+-Template: @@NAME@@/add-microsoft-repo
+-Type: boolean
+-Default: true
+-Description: Add Microsoft apt repository for Visual Studio Code?
+- The installer would like to add the Microsoft repository and signing
+- key to update VS Code through apt.
+-
+ Template: @@NAME@@/add-copilot-command
+ Type: boolean
+ Default: true

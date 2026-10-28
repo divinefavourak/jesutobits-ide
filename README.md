@@ -26,6 +26,15 @@ What Jesutobits does, and how the agent works, is described in the [`jesutobits`
 | Mac with Apple Silicon (M1 and later) | `Jesutobits-<version>-macos-arm64.dmg` (or `.zip`) | Open the disk image and drag Jesutobits to Applications |
 | Mac with Intel | `Jesutobits-<version>-macos-x64.dmg` (or `.zip`) | The same |
 
+### From the command line
+
+| System | Command |
+|---|---|
+| Ubuntu, Debian, Fedora, openSUSE | `curl -fsSL https://divinefavourak.github.io/jesutobits-ide/install.sh \| sudo sh` (once), then it updates with your system (`sudo apt upgrade`, `sudo dnf upgrade`) |
+| macOS | `brew install --cask divinefavourak/tap/jesutobits` |
+
+The script adds Jesutobits' signed package repository; the [setup page](https://divinefavourak.github.io/jesutobits-ide/) shows how to add it by hand instead. Packages and repositories are signed with the key `15FB A79B F733 DC9B C301 2D7B 0883 D53F A592 96DB`.
+
 Each release also has `SHA256SUMS.txt`, to check a download. Every [release](https://github.com/divinefavourak/jesutobits-ide/releases) lists what changed.
 
 **Newer than the latest release:** every push to `main` builds all platforms too. Those builds are under [Actions](https://github.com/divinefavourak/jesutobits-ide/actions) (sign in to GitHub to download; each package is its own `.zip`, kept for 14 days).

@@ -162,3 +162,15 @@ jobs:
             --verify-tag \
             --title "Jesutobits ${GITHUB_REF_NAME#v}" \
             --notes-file "release-notes/$GITHUB_REF_NAME.md"
+
+  # Then the apt and dnf repositories (packaging/publish-packages.sh).
+  packages:
+    name: Package repositories
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: release
+    permissions:
+      contents: write
+    uses: ./.github/workflows/packages.yml
+    with:
+      tag: ${{ github.ref_name }}
+    secrets: inherit

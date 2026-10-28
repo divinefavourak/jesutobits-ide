@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Install Jesutobits on Linux</title>
+<style>
+  :root { --bg: #faf8fd; --fg: #2b2433; --muted: #6b6276; --code: #efeaf6; --accent: #7652af; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #17161c; --fg: #f2eff7; --muted: #a59fb0; --code: #24212c; --accent: #c5b1f7; }
+  }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 16px 64px; }
+  h1 { font-size: 34px; line-height: 1.15; margin: 0 0 8px; }
+  h2 { font-size: 20px; margin: 36px 0 8px; }
+  p { margin: 8px 0; }
+  .lead { color: var(--muted); }
+  pre { background: var(--code); padding: 12px 14px; border-radius: 10px; overflow-x: auto; font-size: 14px; }
+  code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Install Jesutobits on Linux</h1>
+  <p class="lead">An AI agent that builds in front of you. Version @@VERSION@@, for 64-bit Intel and AMD (x86_64).</p>
+
+  <h2>One command</h2>
+  <p>Adds the Jesutobits repository and installs it on Ubuntu, Debian, Fedora, RHEL relatives and openSUSE. Updates then come with the rest of your system.</p>
+  <pre><code>curl -fsSL @@PAGES@@/install.sh | sudo sh</code></pre>
+
+  <h2>Or set it up by hand</h2>
+  <p><strong>Ubuntu, Debian:</strong></p>
+  <pre><code>curl -fsSL @@PAGES@@/jesutobits.gpg | sudo tee /usr/share/keyrings/jesutobits.gpg &gt; /dev/null
+printf 'Types: deb\nURIs: @@APT@@\nSuites: /\nSigned-By: /usr/share/keyrings/jesutobits.gpg\n' | sudo tee /etc/apt/sources.list.d/jesutobits.sources
+sudo apt update
+sudo apt install jesutobits</code></pre>
+  <p><strong>Fedora, RHEL relatives:</strong></p>
+  <pre><code>sudo curl -fsSL @@PAGES@@/rpm/jesutobits.repo -o /etc/yum.repos.d/jesutobits.repo
+sudo dnf install jesutobits</code></pre>
+  <p><strong>openSUSE:</strong></p>
+  <pre><code>sudo zypper addrepo --refresh @@PAGES@@/rpm/jesutobits.repo
+sudo zypper install jesutobits</code></pre>
+
+  <h2>Signing key</h2>
+  <p>Packages and repository indexes are signed with the key <code>15FB A79B F733 DC9B C301 2D7B 0883 D53F A592 96DB</code> (<a href="@@PAGES@@/jesutobits.asc">jesutobits.asc</a>).</p>
+
+  <h2>Other systems</h2>
+  <p>Windows and macOS installers, and the Linux packages to download yourself, are on the <a href="@@RELEASES@@">latest release</a>.</p>
+</main>
+</body>
+</html>
