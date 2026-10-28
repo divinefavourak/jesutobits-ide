@@ -3,5 +3,6 @@ vscode/
 .cache/
 node_modules/
 # Build output (scripts/build.mjs)
-VSCode-win32-x64/
+VSCode-*/
+dist/
 jesutobits/

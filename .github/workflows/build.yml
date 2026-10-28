@@ -1,6 +1,7 @@
-# Builds Jesutobits for Windows x64: the Jesutobits extension from the jesutobits repository,
-# built in, and VS Code at upstream.json's tag, patched and rebranded (scripts/prepare.mjs),
-# packaged with its per-user installer (scripts/build.mjs).
+# Builds Jesutobits for Windows x64, Linux x64 and macOS (Apple Silicon and Intel): the
+# Jesutobits extension from the jesutobits repository, built in, and VS Code at
+# upstream.json's tag, patched and rebranded (scripts/prepare.mjs), packaged per platform
+# (scripts/build.mjs). Mac apps are signed ad hoc only: there is no Apple Developer ID yet.
 name: Build
 
 on:
@@ -21,10 +22,18 @@ permissions:
   contents: read
 
 jobs:
-  windows:
-    name: Windows x64
-    runs-on: windows-latest
-    timeout-minutes: 240
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows x64, os: windows-latest, target: win32-x64 }
+          - { name: Linux x64, os: ubuntu-latest, target: linux-x64 }
+          - { name: macOS Apple Silicon, os: macos-latest, target: darwin-arm64 }
+          - { name: macOS Intel, os: macos-15-intel, target: darwin-x64 }
     steps:
       - uses: actions/checkout@v7
 
@@ -51,6 +60,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      # What VS Code's own Linux pipeline installs (build/azure-pipelines/linux).
+      - name: Install Linux build packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libgtk-3-0 libxkbfile-dev libkrb5-dev libgbm1 rpm fakeroot dpkg
+
       - name: Prepare the source
         run: node scripts/prepare.mjs --extension jesutobits/apps/vscode-extension
 
@@ -60,13 +76,14 @@ jobs:
           cache: npm
           cache-dependency-path: vscode/package-lock.json
       - name: Build
-        run: node scripts/build.mjs
+        run: node scripts/build.mjs --target ${{ matrix.target }}
         env:
-          # Electron and other GitHub release downloads are rate-limited without a token.
+          # Electron, the Linux sysroot and other GitHub release downloads are rate-limited
+          # without a token.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: actions/upload-artifact@v7
         with:
-          name: jesutobits-win32-x64-user-setup
-          path: vscode/.build/win32-x64/user-setup/*.exe
+          name: jesutobits-${{ matrix.target }}
+          path: dist/*
           retention-days: 14
