@@ -1,0 +1,2714 @@
+diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsAccount.ts b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsAccount.ts
+new file mode 100644
+index 0000000..3aafea4
+--- /dev/null
++++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsAccount.ts
+@@ -0,0 +1,437 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Jesutobits. Licensed under the MIT License.
++ *--------------------------------------------------------------------------------------------*/
++
++import { $, append, addDisposableListener, clearNode, EventType } from '../../../../base/browser/dom.js';
++import { BaseActionViewItem, IBaseActionViewItemOptions } from '../../../../base/browser/ui/actionbar/actionViewItems.js';
++import { IAction } from '../../../../base/common/actions.js';
++import { Codicon } from '../../../../base/common/codicons.js';
++import { Disposable } from '../../../../base/common/lifecycle.js';
++import { URI } from '../../../../base/common/uri.js';
++import { localize, localize2 } from '../../../../nls.js';
++import { IAccessibilityService } from '../../../../platform/accessibility/common/accessibility.js';
++import { IActionViewItemService } from '../../../../platform/actions/browser/actionViewItemService.js';
++import { Action2, MenuId, registerAction2 } from '../../../../platform/actions/common/actions.js';
++import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++import { IContextKeyService } from '../../../../platform/contextkey/common/contextkey.js';
++import { InstantiationType, registerSingleton } from '../../../../platform/instantiation/common/extensions.js';
++import { createDecorator, ServicesAccessor } from '../../../../platform/instantiation/common/instantiation.js';
++import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
++import { IOpenerService } from '../../../../platform/opener/common/opener.js';
++import { IWorkbenchContribution, registerWorkbenchContribution2, WorkbenchPhase } from '../../../common/contributions.js';
++import { EXPERIENCE_SETTING, IModalCopy, IModalPage, IRadioChoice, JesutobitsCommand, JesutobitsModal, openRouterMark, PRESET_SETTING } from './jesutobitsModal.js';
++import { EXPERIENCES, PRESETS } from './jesutobitsOnboarding.js';
++
++/**
++ * Jesutobits: the user's avatar in the title bar and the account popup it opens (patch 006).
++ * Jesutobits has no accounts of its own: the profile is a name and a picture kept on this
++ * computer by the extension, and the account is the user's OpenRouter connection. The popup
++ * only ever learns whether a key is stored and what OpenRouter says about it, never the key.
++ */
++
++const NAME_SETTING = 'jesutobits.profile.name';
++const DATA_COLLECTION_SETTING = 'jesutobits.providers.openrouter.dataCollection';
++const ACCOUNT_ACTION_ID = 'jesutobits.titleBar.account';
++/** Context keys the extension sets, so the avatar knows to draw itself again. */
++const PROFILE_KEYS = new Set(['jesutobits.connected', 'jesutobits.profileRevision']);
++/** Only pictures the extension made: an image `data:` URL. */
++const PICTURE_URL = /^data:image\/(?:png|jpeg|gif|webp);base64,[A-Za-z0-9+/]+=*$/;
++
++interface IProfile {
++	readonly name: string;
++	readonly picture: string | null;
++	readonly connected: boolean;
++}
++
++interface IAccountInfo extends IProfile {
++	readonly account?: {
++		readonly label: string | null;
++		readonly usageUsd: number | null;
++		readonly limitUsd: number | null;
++		readonly remainingUsd: number | null;
++		readonly freeTier: boolean;
++		readonly freeRequests: { readonly used: number; readonly limit: number } | null;
++	};
++	readonly problem?: string;
++}
++
++const NO_PROFILE: IProfile = { name: '', picture: null, connected: false };
++
++const PRIVACY: readonly IRadioChoice[] = [
++	{ id: 'deny', label: localize('jt.account.private', "Keep my prompts private"), description: localize('jt.account.private.desc', "Only providers that do not keep or learn from prompts. Free models will not work.") },
++	{ id: 'allow', label: localize('jt.account.allow', "Allow free models"), description: localize('jt.account.allow.desc', "Providers may keep prompts or learn from them. Free models need this.") },
++];
++
++/** The user's picture, or their initial, with a dot that is green while OpenRouter is connected. */
++function renderAvatar(container: HTMLElement, profile: IProfile, size: number): HTMLElement {
++	const avatar = append(container, $('span.jesutobits-avatar'));
++	avatar.style.width = avatar.style.height = `${size}px`;
++	avatar.style.fontSize = `${Math.round(size * 0.45)}px`;
++	avatar.setAttribute('aria-hidden', 'true');
++	if (profile.picture && PICTURE_URL.test(profile.picture)) {
++		const img = append(avatar, $<HTMLImageElement>('img'));
++		img.src = profile.picture;
++		img.alt = '';
++	} else if (profile.name) {
++		avatar.textContent = [...profile.name.trim()][0]?.toUpperCase() ?? '';
++	} else {
++		avatar.appendChild($('span.codicon.codicon-account'));
++	}
++	append(avatar, $('span.jesutobits-avatar-dot')).classList.toggle('connected', profile.connected);
++	return avatar;
++}
++
++function money(value: number): string {
++	return `$${value < 10 ? value.toFixed(2) : value.toFixed(0)}`;
++}
++
++export const IJesutobitsAccountService = createDecorator<IJesutobitsAccountService>('jesutobitsAccountService');
++
++export interface IJesutobitsAccountService {
++	readonly _serviceBrand: undefined;
++	show(): void;
++}
++
++export class JesutobitsAccount extends JesutobitsModal implements IJesutobitsAccountService {
++
++	declare readonly _serviceBrand: undefined;
++
++	private profile: IProfile = NO_PROFILE;
++	private info: IAccountInfo | undefined;
++	private checking = false;
++
++	constructor(
++		@ILayoutService layoutService: ILayoutService,
++		@IConfigurationService configurationService: IConfigurationService,
++		@ICommandService commandService: ICommandService,
++		@IAccessibilityService accessibilityService: IAccessibilityService,
++		@IOpenerService private readonly openerService: IOpenerService,
++	) {
++		super(layoutService, accessibilityService, commandService, configurationService);
++	}
++
++	override show(): void {
++		if (this.isOpen) {
++			return;
++		}
++		super.show();
++		void this.load();
++	}
++
++	/** The profile, then (when connected) what OpenRouter says about the key. */
++	private async load(): Promise<void> {
++		this.profile = (await this.query<IProfile>(JesutobitsCommand.Profile)) ?? NO_PROFILE;
++		this.info = undefined;
++		this.checking = this.profile.connected;
++		this.renderHeroAgain();
++		this.redrawOpenRouterPage();
++		if (this.profile.connected) {
++			this.info = await this.query<IAccountInfo>(JesutobitsCommand.Account);
++			this.checking = false;
++			this.redrawOpenRouterPage();
++		}
++	}
++
++	/** An extension command answering data; no prompt, so the popup stays where it is. */
++	private async query<T>(command: string): Promise<T | undefined> {
++		try {
++			return await this.commandService.executeCommand<T>(command);
++		} catch {
++			return undefined;
++		}
++	}
++
++	private redrawOpenRouterPage(): void {
++		if (this.isOpen && this.pageIndex === 1) {
++			this.renderPage();
++		}
++	}
++
++	protected copy(): IModalCopy {
++		return {
++			className: 'jesutobits-account',
++			ariaLabel: localize('jt.account.aria', "Your account"),
++			header: localize('jt.account.header', "Your account"),
++			close: localize('jt.account.close', "Close"),
++			note: [localize('jt.account.note.one', "Your name and picture stay on this computer."), localize('jt.account.note.two', "Your key stays in the system's credential store.")],
++			freeNavigation: true,
++		};
++	}
++
++	protected renderHero(container: HTMLElement): void {
++		append(container, $('div.jesutobits-modal-eyebrow')).textContent = localize('jt.account.eyebrow', "Your account");
++		const who = append(container, $('.jesutobits-account-who'));
++		renderAvatar(who, this.profile, 64);
++		append(who, $('div.jesutobits-account-name')).textContent = this.profile.name || localize('jt.account.you', "You");
++		const status = append(who, $('div.jesutobits-account-status'));
++		append(status, $('i')).classList.toggle('connected', this.profile.connected);
++		append(status, $('span')).textContent = this.profile.connected
++			? localize('jt.account.connected', "Connected to OpenRouter")
++			: localize('jt.account.notConnected', "Not connected yet");
++	}
++
++	protected pages(): readonly IModalPage[] {
++		return [
++			{
++				label: localize('jt.account.page.profile', "Profile"),
++				title: localize('jt.account.profile.title', "This is you."),
++				subtitle: localize('jt.account.profile.subtitle', "Your name and picture show in the top bar. Jesutobits keeps them on this computer; nobody else sees them."),
++				render: container => this.renderProfile(container),
++			},
++			{
++				label: localize('jt.account.page.openrouter', "OpenRouter"),
++				title: localize('jt.account.openrouter.title', "Your OpenRouter\naccount"),
++				subtitle: localize('jt.account.openrouter.subtitle', "One account for many AI models. Your co-builder reaches the model you pick through it."),
++				render: container => this.renderOpenRouter(container),
++			},
++			{
++				label: localize('jt.account.page.model', "Model & privacy"),
++				title: localize('jt.account.model.title', "Your model and\nyour data"),
++				subtitle: localize('jt.account.model.subtitle', "Pick the model new sessions use, and what model makers may do with your prompts."),
++				render: container => this.renderModelAndPrivacy(container),
++			},
++			{
++				label: localize('jt.account.page.work', "How I work"),
++				title: localize('jt.account.work.title', "How much should I\ncheck with you?"),
++				subtitle: localize('jt.account.work.subtitle', "Your co-builder explains its steps either way. You can also change this from the status bar."),
++				render: container => {
++					this.renderRadioRows(container, PRESETS, this.configurationService.getValue<string>(PRESET_SETTING) ?? 'balanced', localize('jt.account.work.preset', "Before edits and commands"), choice => {
++						this.configurationService.updateValue(PRESET_SETTING, choice.id, ConfigurationTarget.USER);
++					});
++					this.renderRadioRows(container, EXPERIENCES, this.configurationService.getValue<string>(EXPERIENCE_SETTING) ?? undefined, localize('jt.account.work.experience', "Where are you starting from?"), choice => {
++						this.configurationService.updateValue(EXPERIENCE_SETTING, choice.id, ConfigurationTarget.USER);
++					});
++				},
++			},
++		];
++	}
++
++	protected primaryLabel(): string {
++		return localize('jt.account.done', "Done");
++	}
++
++	protected finish(): void {
++		this.dismiss();
++	}
++
++	protected override renderFooterStart(container: HTMLElement): void {
++		const all = append(container, $<HTMLButtonElement>('button.jesutobits-onboarding-link'));
++		all.type = 'button';
++		all.textContent = localize('jt.account.allSettings', "All settings");
++		this.registerChrome(all);
++		this.chromeDisposables.add(addDisposableListener(all, EventType.CLICK, () => {
++			this.dismiss();
++			void this.commandService.executeCommand('workbench.action.openSettings', 'jesutobits');
++		}));
++	}
++
++	// Profile
++
++	private renderProfile(container: HTMLElement): void {
++		const row = append(container, $('.jesutobits-account-picture'));
++		renderAvatar(row, this.profile, 72);
++		const buttons = append(row, $('.jesutobits-onboarding-row'));
++		const choose = this.registerFocusable(append(buttons, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-secondary')));
++		choose.type = 'button';
++		choose.textContent = this.profile.picture
++			? localize('jt.account.changePicture', "Change picture")
++			: localize('jt.account.choosePicture', "Choose a picture");
++		this.pageDisposables.add(addDisposableListener(choose, EventType.CLICK, async () => {
++			await this.runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.ChoosePicture));
++			await this.load();
++			this.renderPage();
++		}));
++		if (this.profile.picture) {
++			const remove = this.registerFocusable(append(buttons, $<HTMLButtonElement>('button.jesutobits-onboarding-link')));
++			remove.type = 'button';
++			remove.textContent = localize('jt.account.removePicture', "Remove");
++			this.pageDisposables.add(addDisposableListener(remove, EventType.CLICK, async () => {
++				await this.runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.RemovePicture));
++				await this.load();
++				this.renderPage();
++			}));
++		}
++
++		const label = append(container, $<HTMLLabelElement>('label.jesutobits-modal-label'));
++		label.textContent = localize('jt.account.nameLabel', "What should I call you?");
++		label.htmlFor = 'jesutobits-account-name';
++		const field = this.registerFocusable(append(container, $<HTMLInputElement>('input.jesutobits-account-input')));
++		field.id = 'jesutobits-account-name';
++		field.maxLength = 60;
++		field.value = this.configurationService.getValue<string>(NAME_SETTING) ?? '';
++		field.placeholder = this.profile.name;
++		const save = async () => {
++			const name = field.value.trim();
++			if (name === (this.configurationService.getValue<string>(NAME_SETTING) ?? '')) {
++				return;
++			}
++			await this.configurationService.updateValue(NAME_SETTING, name, ConfigurationTarget.USER);
++			this.profile = (await this.query<IProfile>(JesutobitsCommand.Profile)) ?? this.profile;
++			this.renderHeroAgain();
++		};
++		this.pageDisposables.add(addDisposableListener(field, EventType.BLUR, () => void save()));
++		this.pageDisposables.add(addDisposableListener(field, EventType.KEY_DOWN, (e: KeyboardEvent) => {
++			if (e.key === 'Enter') {
++				e.preventDefault();
++				void save();
++			}
++		}));
++		append(container, $('div.jesutobits-modal-hint')).textContent = localize('jt.account.nameHint', "Leave it empty to use your computer's user name.");
++	}
++
++	// OpenRouter
++
++	private renderOpenRouter(container: HTMLElement): void {
++		if (!this.profile.connected) {
++			this.renderConnect(container, () => void this.load());
++			return;
++		}
++		const panel = append(container, $('.jesutobits-onboarding-panel'));
++		const heading = append(panel, $('div.jesutobits-onboarding-panel-title'));
++		heading.appendChild(openRouterMark(heading.ownerDocument, 14));
++		append(heading, $('span')).textContent = localize('jt.account.connectedTitle', "Connected to OpenRouter");
++
++		const facts = append(panel, $('dl.jesutobits-account-facts'));
++		const fact = (term: string, value: string) => {
++			append(facts, $('dt')).textContent = term;
++			append(facts, $('dd')).textContent = value;
++		};
++		const account = this.info?.account;
++		if (this.checking) {
++			append(panel, $('div.jesutobits-onboarding-status')).textContent = localize('jt.account.checking', "Checking your account…");
++		} else if (!account) {
++			append(panel, $('div.jesutobits-onboarding-status')).textContent = this.info?.problem ?? localize('jt.account.noInfo', "OpenRouter did not say more about this key.");
++		} else {
++			fact(localize('jt.account.key', "Key"), account.label ?? localize('jt.account.unnamed', "Unnamed"));
++			fact(localize('jt.account.plan', "Plan"), account.freeTier
++				? localize('jt.account.freeTier', "Free (no credits bought yet)")
++				: localize('jt.account.paid', "Credits"));
++			if (account.usageUsd !== null) {
++				fact(localize('jt.account.spent', "Spent with this key"), money(account.usageUsd));
++			}
++			fact(localize('jt.account.limit', "Spending limit"), account.limitUsd === null
++				? localize('jt.account.noLimit', "No limit")
++				: localize('jt.account.left', "{0} left of {1}", money(account.remainingUsd ?? 0), money(account.limitUsd)));
++			if (account.freeRequests) {
++				fact(localize('jt.account.freeToday', "Free-model requests today"), localize('jt.account.freeUsed', "{0} of {1}", account.freeRequests.used, account.freeRequests.limit));
++			}
++		}
++
++		const row = append(panel, $('.jesutobits-onboarding-row'));
++		const link = (label: string, url: string, primary = false) => {
++			const button = this.registerFocusable(append(row, $<HTMLButtonElement>(`button.onboarding-a-btn.${primary ? 'onboarding-a-btn-primary' : 'onboarding-a-btn-secondary'}`)));
++			button.type = 'button';
++			button.textContent = label;
++			this.pageDisposables.add(addDisposableListener(button, EventType.CLICK, () => {
++				void this.openerService.open(URI.parse(url), { openExternal: true });
++			}));
++		};
++		link(localize('jt.account.credits', "Add credits"), 'https://openrouter.ai/settings/credits', !!account?.freeTier);
++		link(localize('jt.account.keys', "Manage keys"), 'https://openrouter.ai/settings/keys');
++		const signOut = this.registerFocusable(append(row, $<HTMLButtonElement>('button.jesutobits-onboarding-link.danger')));
++		signOut.type = 'button';
++		signOut.textContent = localize('jt.account.signOut', "Sign out");
++		this.pageDisposables.add(addDisposableListener(signOut, EventType.CLICK, async () => {
++			await this.runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.SignOut));
++			await this.load();
++			this.renderPage();
++		}));
++	}
++
++	// Model and privacy
++
++	private renderModelAndPrivacy(container: HTMLElement): void {
++		this.renderModel(container, async () => this.profile.connected);
++		this.renderRadioRows(container, PRIVACY, this.configurationService.getValue<string>(DATA_COLLECTION_SETTING) ?? 'deny', localize('jt.account.privacy', "What model makers may do with your prompts"), choice => {
++			this.configurationService.updateValue(DATA_COLLECTION_SETTING, choice.id, ConfigurationTarget.USER);
++		});
++	}
++}
++
++registerSingleton(IJesutobitsAccountService, JesutobitsAccount, InstantiationType.Delayed);
++
++/** The avatar in the title bar: the user's picture or initial; a click opens the account popup. */
++class JesutobitsAvatarViewItem extends BaseActionViewItem {
++
++	private generation = 0;
++
++	constructor(
++		action: IAction,
++		options: IBaseActionViewItemOptions,
++		@ICommandService private readonly commandService: ICommandService,
++		@IContextKeyService contextKeyService: IContextKeyService,
++		@IConfigurationService configurationService: IConfigurationService,
++	) {
++		super(undefined, action, options);
++		this._register(contextKeyService.onDidChangeContext(e => {
++			if (e.affectsSome(PROFILE_KEYS)) {
++				void this.draw();
++			}
++		}));
++		this._register(configurationService.onDidChangeConfiguration(e => {
++			if (e.affectsConfiguration(NAME_SETTING)) {
++				void this.draw();
++			}
++		}));
++	}
++
++	override render(container: HTMLElement): void {
++		super.render(container);
++		container.classList.add('jesutobits-avatar-item');
++		container.setAttribute('role', 'button');
++		container.tabIndex = 0;
++		void this.draw();
++	}
++
++	private async draw(): Promise<void> {
++		const generation = ++this.generation;
++		let profile: IProfile | undefined;
++		try {
++			profile = await this.commandService.executeCommand<IProfile>(JesutobitsCommand.Profile);
++		} catch {
++			// The extension has not started yet; its context keys draw the avatar again later.
++		}
++		const element = this.element;
++		if (!element || generation !== this.generation) {
++			return;
++		}
++		clearNode(element);
++		renderAvatar(element, profile ?? NO_PROFILE, 24);
++		const label = profile
++			? profile.connected
++				? localize('jt.avatar.connected', "{0} · Connected to OpenRouter", profile.name)
++				: localize('jt.avatar.notConnected', "{0} · Not connected to OpenRouter", profile.name)
++			: localize('jt.avatar.account', "Your account");
++		element.title = label;
++		element.setAttribute('aria-label', label);
++	}
++}
++
++registerAction2(class extends Action2 {
++	constructor() {
++		super({
++			id: ACCOUNT_ACTION_ID,
++			title: localize2('jesutobits.titleBar.account', "Your Account"),
++			icon: Codicon.account,
++			menu: { id: MenuId.TitleBar, group: 'navigation', order: 1000 },
++		});
++	}
++
++	run(accessor: ServicesAccessor): void {
++		accessor.get(IJesutobitsAccountService).show();
++	}
++});
++
++class JesutobitsAvatarContribution extends Disposable implements IWorkbenchContribution {
++
++	static readonly ID = 'workbench.contrib.jesutobitsAvatar';
++
++	constructor(@IActionViewItemService actionViewItemService: IActionViewItemService) {
++		super();
++		this._register(actionViewItemService.register(MenuId.TitleBar, ACCOUNT_ACTION_ID, (action, options, instantiationService) =>
++			instantiationService.createInstance(JesutobitsAvatarViewItem, action, options)));
++	}
++}
++
++registerWorkbenchContribution2(JesutobitsAvatarContribution.ID, JesutobitsAvatarContribution, WorkbenchPhase.BlockStartup);
+diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsModal.ts b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsModal.ts
+new file mode 100644
+index 0000000..47d4ed6
+--- /dev/null
++++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsModal.ts
+@@ -0,0 +1,652 @@
++/*---------------------------------------------------------------------------------------------
++ *  Copyright (c) Jesutobits. Licensed under the MIT License.
++ *  Built on Microsoft's OnboardingVariationA (MIT) in this folder.
++ *--------------------------------------------------------------------------------------------*/
++
++import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
++import { $, append, addDisposableListener, EventType, clearNode, getActiveWindow } from '../../../../base/browser/dom.js';
++import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
++import { KeyCode } from '../../../../base/common/keyCodes.js';
++import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
++import { localize } from '../../../../nls.js';
++import { Codicon } from '../../../../base/common/codicons.js';
++import { ThemeIcon } from '../../../../base/common/themables.js';
++import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
++import { IAccessibilityService } from '../../../../platform/accessibility/common/accessibility.js';
++import { ICommandService } from '../../../../platform/commands/common/commands.js';
++import { IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
++
++/**
++ * The Jesutobits popups' shared shell, from the Studio design: VS Code's onboarding modal
++ * (`onboarding-a-*` styles, focus trap, Escape) laid out in two columns. The left column has
++ * the brand, a headline and the list of pages; the right one the page with a header, and a
++ * footer with Back, progress dots and the main button. The welcome popup and the account
++ * popup are built on it.
++ */
++
++/** The Jesutobits extension's commands the popups use (apps/vscode-extension in the jesutobits repository). */
++export const JesutobitsCommand = {
++	HasApiKey: 'jesutobits.hasApiKey',
++	ConnectOpenRouter: 'jesutobits.connectOpenRouter',
++	SetApiKey: 'jesutobits.setApiKey',
++	SignOut: 'jesutobits.signOut',
++	UseFreeModel: 'jesutobits.useFreeModel',
++	ChooseModel: 'jesutobits.chooseModel',
++	Compose: 'jesutobits.compose',
++	OpenAgent: 'jesutobits.openAgent',
++	StudioView: 'jesutobits.studio.focus',
++	Profile: 'jesutobits.profile',
++	Account: 'jesutobits.account',
++	ChoosePicture: 'jesutobits.chooseProfilePicture',
++	RemovePicture: 'jesutobits.removeProfilePicture',
++} as const;
++
++export const MODEL_SETTING = 'jesutobits.providers.openrouter.defaultModel';
++/** What `jesutobits.useFreeModel` sets (FREE_CODING_MODEL in the extension). */
++export const FREE_MODEL = 'poolside/laguna-s-2.1:free';
++export const PRESET_SETTING = 'jesutobits.agent.defaultPolicyPreset';
++export const EXPERIENCE_SETTING = 'jesutobits.experience';
++
++export interface IModalPage {
++	/** In the left column's list. */
++	readonly label: string;
++	/** The page heading; a line break starts a new line. */
++	readonly title: string;
++	readonly subtitle: string;
++	/** Optional art above the heading (Buddy, a tile). */
++	readonly art?: (container: HTMLElement) => void;
++	readonly render: (container: HTMLElement) => void;
++}
++
++export interface IModalCopy {
++	/** An extra class on the overlay, for the popup's own styles. */
++	readonly className: string;
++	readonly ariaLabel: string;
++	/** Above the page heading, before "1 of 4". */
++	readonly header: string;
++	/** The close button's text ("Skip for now", "Close"). */
++	readonly close: string;
++	/** The left column's small print. */
++	readonly note: readonly string[];
++	/** The left column's list moves between pages (the account), or only shows progress (the welcome). */
++	readonly freeNavigation: boolean;
++}
++
++export interface IRadioChoice {
++	readonly id: string;
++	readonly label: string;
++	readonly description: string;
++}
++
++export abstract class JesutobitsModal extends Disposable {
++
++	protected overlay: HTMLElement | undefined;
++	private asideHero: HTMLElement | undefined;
++	private navList: HTMLElement | undefined;
++	private headerLabel: HTMLElement | undefined;
++	private bodyEl: HTMLElement | undefined;
++	private artEl: HTMLElement | undefined;
++	private titleEl: HTMLElement | undefined;
++	private subtitleEl: HTMLElement | undefined;
++	private contentEl: HTMLElement | undefined;
++	private dotsEl: HTMLElement | undefined;
++	private backButton: HTMLButtonElement | undefined;
++	private primaryButton: HTMLButtonElement | undefined;
++	private closeButton: HTMLButtonElement | undefined;
++
++	protected pageIndex = 0;
++	/** Lives while the popup is open: its frame's listeners. */
++	protected readonly chromeDisposables = this._register(new DisposableStore());
++	protected readonly pageDisposables = this._register(new DisposableStore());
++	private readonly chromeFocusable: HTMLElement[] = [];
++	private readonly pageFocusable: HTMLElement[] = [];
++	private previouslyFocusedElement: HTMLElement | undefined;
++
++	constructor(
++		private readonly layoutService: ILayoutService,
++		protected readonly accessibilityService: IAccessibilityService,
++		protected readonly commandService: ICommandService,
++		protected readonly configurationService: IConfigurationService,
++	) {
++		super();
++	}
++
++	protected abstract copy(): IModalCopy;
++	protected abstract pages(): readonly IModalPage[];
++	/** The left column under the brand: a headline (welcome) or the user (account). */
++	protected abstract renderHero(container: HTMLElement): void;
++	protected abstract primaryLabel(index: number): string;
++	/** The main button on the last page (or on every page with free navigation). */
++	protected abstract finish(): Promise<void> | void;
++	/** After the popup has gone. */
++	protected onDismissed(): void { }
++	/** Something to the left of the footer's dots (the account's "All settings"). */
++	protected renderFooterStart(_container: HTMLElement): void { }
++
++	get isOpen(): boolean {
++		return this.overlay !== undefined;
++	}
++
++	show(): void {
++		if (this.overlay) {
++			return;
++		}
++		const copy = this.copy();
++		this.pageIndex = 0;
++		this.previouslyFocusedElement = getActiveWindow().document.activeElement as HTMLElement | undefined;
++
++		this.overlay = append(this.layoutService.activeContainer, $(`.onboarding-a-overlay.jesutobits-onboarding.jesutobits-modal.${copy.className}`));
++		this.overlay.setAttribute('role', 'dialog');
++		this.overlay.setAttribute('aria-modal', 'true');
++		this.overlay.setAttribute('aria-label', copy.ariaLabel);
++
++		const card = append(this.overlay, $('.onboarding-a-card.jesutobits-modal-card'));
++
++		// Left: brand, hero, the pages, small print.
++		const aside = append(card, $('aside.jesutobits-modal-aside'));
++		const brand = append(aside, $('.jesutobits-modal-brand'));
++		brand.appendChild(jMark(brand.ownerDocument, 26));
++		append(brand, $('span')).textContent = 'jesutobits';
++		this.asideHero = append(aside, $('.jesutobits-modal-hero'));
++		this.renderHero(this.asideHero);
++		this.navList = append(aside, $('ol.jesutobits-modal-nav'));
++		const note = append(aside, $('.jesutobits-modal-note'));
++		for (const line of copy.note) {
++			append(note, $('div')).textContent = line;
++		}
++
++		// Right: header, page, footer.
++		const main = append(card, $('.jesutobits-modal-main'));
++		const header = append(main, $('.jesutobits-modal-header'));
++		this.headerLabel = append(header, $('div.jesutobits-modal-eyebrow'));
++		this.closeButton = append(header, $<HTMLButtonElement>('button.jesutobits-modal-close'));
++		this.closeButton.type = 'button';
++		append(this.closeButton, $('span')).textContent = copy.close;
++		this.closeButton.appendChild(renderIcon(Codicon.close));
++		this.chromeFocusable.push(this.closeButton);
++
++		this.bodyEl = append(main, $('.onboarding-a-body.jesutobits-modal-body'));
++		this.artEl = append(this.bodyEl, $('.jesutobits-modal-art'));
++		this.titleEl = append(this.bodyEl, $('h2.onboarding-a-step-title.jesutobits-modal-title'));
++		this.subtitleEl = append(this.bodyEl, $('p.onboarding-a-step-subtitle.jesutobits-modal-subtitle'));
++		this.contentEl = append(this.bodyEl, $('.onboarding-a-step-content'));
++
++		const footer = append(main, $('.onboarding-a-footer.jesutobits-modal-footer'));
++		const footerStart = append(footer, $('.jesutobits-modal-footer-start'));
++		this.backButton = append(footerStart, $<HTMLButtonElement>('button.jesutobits-modal-back'));
++		this.backButton.type = 'button';
++		this.backButton.textContent = localize('jt.modal.back', "← Back");
++		this.chromeFocusable.push(this.backButton);
++		this.renderFooterStart(footerStart);
++		this.dotsEl = append(footer, $('.jesutobits-modal-dots'));
++		this.dotsEl.setAttribute('aria-hidden', 'true');
++		this.primaryButton = append(footer, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-primary.jesutobits-modal-primary'));
++		this.primaryButton.type = 'button';
++		this.chromeFocusable.push(this.primaryButton);
++
++		this.chromeDisposables.add(addDisposableListener(this.closeButton, EventType.CLICK, () => this.dismiss()));
++		this.chromeDisposables.add(addDisposableListener(this.backButton, EventType.CLICK, () => this.goTo(this.pageIndex - 1)));
++		this.chromeDisposables.add(addDisposableListener(this.primaryButton, EventType.CLICK, () => {
++			if (this.copy().freeNavigation || this.pageIndex === this.pages().length - 1) {
++				void this.finish();
++			} else {
++				this.goTo(this.pageIndex + 1);
++			}
++		}));
++		this.chromeDisposables.add(addDisposableListener(this.overlay, EventType.KEY_DOWN, (e: KeyboardEvent) => {
++			const event = new StandardKeyboardEvent(e);
++			// Keep the workbench's keybindings out while the popup is open.
++			e.stopPropagation();
++			if (event.keyCode === KeyCode.Escape) {
++				e.preventDefault();
++				this.dismiss();
++			} else if (event.keyCode === KeyCode.Tab) {
++				this.trapTab(e, event.shiftKey);
++			}
++		}));
++
++		this.renderPage();
++
++		this.overlay.classList.add('entering');
++		getActiveWindow().requestAnimationFrame(() => {
++			this.overlay?.classList.remove('entering');
++			this.overlay?.classList.add('visible');
++		});
++		this.focusPage();
++	}
++
++	protected goTo(index: number): void {
++		if (index < 0 || index >= this.pages().length || !this.overlay) {
++			return;
++		}
++		this.pageIndex = index;
++		this.renderPage();
++		this.focusPage();
++	}
++
++	/** Draws the current page again (after something it shows changed). */
++	protected renderPage(): void {
++		if (!this.titleEl || !this.subtitleEl || !this.contentEl || !this.artEl) {
++			return;
++		}
++		const copy = this.copy();
++		const pages = this.pages();
++		const page = pages[this.pageIndex];
++		this.pageDisposables.clear();
++		this.pageFocusable.length = 0;
++
++		clearNode(this.artEl);
++		page.art?.(this.artEl);
++		this.artEl.style.display = page.art ? '' : 'none';
++		this.titleEl.textContent = page.title;
++		this.subtitleEl.textContent = page.subtitle;
++		clearNode(this.contentEl);
++		page.render(this.contentEl);
++
++		if (this.headerLabel) {
++			clearNode(this.headerLabel);
++			append(this.headerLabel, $('span')).textContent = `${copy.header} / `;
++			append(this.headerLabel, $('span.jesutobits-modal-count')).textContent = localize('jt.modal.count', "{0} of {1}", this.pageIndex + 1, pages.length);
++		}
++		this.renderNav(copy, pages);
++		if (this.dotsEl) {
++			clearNode(this.dotsEl);
++			for (let i = 0; i < pages.length; i++) {
++				append(this.dotsEl, $('i')).classList.toggle('active', i === this.pageIndex);
++			}
++		}
++		if (this.backButton) {
++			this.backButton.style.visibility = copy.freeNavigation || this.pageIndex === 0 ? 'hidden' : '';
++		}
++		if (this.primaryButton) {
++			clearNode(this.primaryButton);
++			append(this.primaryButton, $('span')).textContent = this.primaryLabel(this.pageIndex);
++			this.primaryButton.appendChild(renderIcon(Codicon.arrowRight));
++		}
++		this.bodyEl?.setAttribute('aria-label', localize('jt.modal.page', "{0} of {1}: {2}", this.pageIndex + 1, pages.length, page.title));
++	}
++
++	/** Draws the left column's hero again (after the profile changed). */
++	protected renderHeroAgain(): void {
++		if (this.asideHero) {
++			clearNode(this.asideHero);
++			this.renderHero(this.asideHero);
++		}
++	}
++
++	private renderNav(copy: IModalCopy, pages: readonly IModalPage[]): void {
++		if (!this.navList) {
++			return;
++		}
++		clearNode(this.navList);
++		pages.forEach((page, i) => {
++			const item = append(this.navList!, $('li'));
++			const state = i === this.pageIndex ? 'current' : i < this.pageIndex && !copy.freeNavigation ? 'done' : 'ahead';
++			item.classList.add(state);
++			let row: HTMLElement;
++			if (copy.freeNavigation) {
++				const button = this.registerFocusable(append(item, $<HTMLButtonElement>('button.jesutobits-modal-nav-item')));
++				button.type = 'button';
++				this.pageDisposables.add(addDisposableListener(button, EventType.CLICK, () => this.goTo(i)));
++				row = button;
++			} else {
++				row = append(item, $('.jesutobits-modal-nav-item'));
++			}
++			if (i === this.pageIndex) {
++				row.setAttribute('aria-current', 'step');
++			}
++			const bullet = append(row, $('span.jesutobits-modal-nav-bullet'));
++			if (state === 'done') {
++				bullet.appendChild(renderIcon(Codicon.check));
++			} else {
++				bullet.textContent = String(i + 1);
++			}
++			append(row, $('span')).textContent = page.label;
++		});
++	}
++
++	protected dismiss(): void {
++		const overlay = this.overlay;
++		if (!overlay) {
++			return;
++		}
++		overlay.classList.remove('visible');
++		overlay.classList.add('exiting');
++		let handled = false;
++		const onTransitionEnd = () => {
++			if (handled) {
++				return;
++			}
++			handled = true;
++			this.removeFromDOM();
++			this.onDismissed();
++		};
++		overlay.addEventListener('transitionend', onTransitionEnd, { once: true });
++		setTimeout(onTransitionEnd, 400);
++	}
++
++	// OpenRouter: connecting and the model, in the welcome popup and the account popup.
++
++	/**
++	 * Sign in with OpenRouter (the browser; the extension stores the key it makes) or "I have
++	 * a key" (VS Code's password box). This popup only ever learns whether a key is stored.
++	 */
++	protected renderConnect(container: HTMLElement, onChange: () => void): { refresh(): Promise<void> } {
++		const panel = append(container, $('.jesutobits-onboarding-panel'));
++		const heading = append(panel, $('div.jesutobits-onboarding-panel-title'));
++		heading.appendChild(openRouterMark(heading.ownerDocument, 14));
++		append(heading, $('span')).textContent = localize('jt.connect.title', "Connect OpenRouter");
++		append(panel, $('p')).textContent = localize('jt.connect.desc', "OpenRouter is one account for many AI models. Sign in and allow Jesutobits: there is no key to copy, and the one OpenRouter makes is kept in your system's credential store.");
++
++		const row = append(panel, $('.jesutobits-onboarding-row'));
++		const signIn = this.registerFocusable(append(row, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-primary.jesutobits-signin')));
++		signIn.type = 'button';
++		signIn.appendChild(openRouterMark(signIn.ownerDocument, 11));
++		const signInLabel = append(signIn, $('span'));
++		const paste = this.registerFocusable(append(row, $<HTMLButtonElement>('button.jesutobits-onboarding-link')));
++		paste.type = 'button';
++		paste.textContent = localize('jt.connect.paste', "I have a key");
++		const status = append(panel, $('div.jesutobits-onboarding-status'));
++		status.setAttribute('role', 'status');
++
++		let waiting = false;
++		const refresh = async () => {
++			const connected = await this.runExtensionCommand(() => this.commandService.executeCommand<boolean>(JesutobitsCommand.HasApiKey));
++			signInLabel.textContent = connected
++				? localize('jt.connect.again', "Sign in again")
++				: localize('jt.connect.signIn', "Sign in with OpenRouter");
++			signIn.classList.toggle('onboarding-a-btn-primary', !connected);
++			signIn.classList.toggle('onboarding-a-btn-secondary', !!connected);
++			signIn.disabled = paste.disabled = waiting;
++			status.textContent = waiting
++				? localize('jt.connect.waiting', "Finish in your browser: allow Jesutobits on openrouter.ai.")
++				: connected
++					? localize('jt.connect.stored', "Connected. Your key is stored securely.")
++					: localize('jt.connect.missing', "Not connected yet. You can do it later from the agent panel.");
++		};
++		const run = (button: HTMLButtonElement, command: string) => this.pageDisposables.add(addDisposableListener(button, EventType.CLICK, async () => {
++			waiting = command === JesutobitsCommand.ConnectOpenRouter;
++			await refresh();
++			try {
++				await this.runExtensionCommand(() => this.commandService.executeCommand(command));
++			} finally {
++				waiting = false;
++				await refresh();
++				onChange();
++				if (button.isConnected) {
++					button.focus();
++				}
++			}
++		}));
++		run(signIn, JesutobitsCommand.ConnectOpenRouter);
++		run(paste, JesutobitsCommand.SetApiKey);
++		void refresh();
++		return { refresh };
++	}
++
++	/** The default model: the free one (with what that means for the prompts) or any other. */
++	protected renderModel(container: HTMLElement, connected: () => Promise<boolean>): { refresh(): Promise<void> } {
++		const panel = append(container, $('.jesutobits-onboarding-panel'));
++		const heading = append(panel, $('div.jesutobits-onboarding-panel-title'));
++		heading.appendChild(renderIcon(Codicon.sparkle));
++		append(heading, $('span')).textContent = localize('jt.model.title', "Your model");
++		const row = append(panel, $('.jesutobits-onboarding-row'));
++		const free = this.registerFocusable(append(row, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-secondary')));
++		free.type = 'button';
++		free.textContent = localize('jt.model.free', "Use the free model");
++		const choose = this.registerFocusable(append(row, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-secondary')));
++		choose.type = 'button';
++		choose.textContent = localize('jt.model.choose', "Choose another");
++		append(panel, $('p.jesutobits-onboarding-note')).textContent = localize('jt.model.note', "The free model is Laguna S 2.1 by Poolside, made for coding. It is free because Poolside may learn from your prompts, so choosing it allows that. Pick a paid model to keep your prompts private.");
++		const status = append(panel, $('div.jesutobits-onboarding-status'));
++		status.setAttribute('role', 'status');
++
++		const refresh = async () => {
++			const hasKey = await connected();
++			const model = this.configurationService.getValue<string | null>(MODEL_SETTING);
++			free.disabled = choose.disabled = !hasKey;
++			free.classList.toggle('onboarding-a-btn-primary', hasKey && !model);
++			free.classList.toggle('onboarding-a-btn-secondary', !(hasKey && !model));
++			status.textContent = !hasKey
++				? localize('jt.model.needsKey', "Connect first to pick a model.")
++				: model === FREE_MODEL
++					? localize('jt.model.isFree', "Default model: Laguna S 2.1 (free).")
++					: model
++						? localize('jt.model.chosen', "Default model: {0}", model)
++						: localize('jt.model.none', "No default model yet.");
++		};
++		for (const [button, command] of [[free, JesutobitsCommand.UseFreeModel], [choose, JesutobitsCommand.ChooseModel]] as const) {
++			this.pageDisposables.add(addDisposableListener(button, EventType.CLICK, async () => {
++				await this.runExtensionCommand(() => this.commandService.executeCommand(command));
++				await refresh();
++				if (button.isConnected) {
++					button.focus();
++				}
++			}));
++		}
++		void refresh();
++		return { refresh };
++	}
++
++	protected hasKey(): Promise<boolean> {
++		return this.runExtensionCommand(() => this.commandService.executeCommand<boolean>(JesutobitsCommand.HasApiKey)).then(value => !!value);
++	}
++
++	// Pieces the pages share.
++
++	/** A radio group of rows (a circle, a title, a line of description), as in the design. */
++	protected renderRadioRows(container: HTMLElement, choices: readonly IRadioChoice[], selectedId: string | undefined, label: string, onChoose: (choice: IRadioChoice) => void): void {
++		append(container, $('div.jesutobits-modal-label')).textContent = label;
++		const group = append(container, $('.jesutobits-radio-rows'));
++		group.setAttribute('role', 'radiogroup');
++		group.setAttribute('aria-label', label);
++		const rows: HTMLButtonElement[] = [];
++		for (const choice of choices) {
++			const row = this.registerFocusable(append(group, $<HTMLButtonElement>('button.jesutobits-radio-row')));
++			row.type = 'button';
++			row.setAttribute('role', 'radio');
++			const selected = choice.id === selectedId;
++			row.classList.toggle('selected', selected);
++			row.setAttribute('aria-checked', String(selected));
++			rows.push(row);
++			append(row, $('span.jesutobits-radio')).setAttribute('aria-hidden', 'true');
++			const text = append(row, $('span.jesutobits-radio-text'));
++			append(text, $('span.jesutobits-radio-title')).textContent = choice.label;
++			append(text, $('span.jesutobits-radio-desc')).textContent = choice.description;
++			this.pageDisposables.add(addDisposableListener(row, EventType.CLICK, () => {
++				for (const r of rows) {
++					r.classList.toggle('selected', r === row);
++					r.setAttribute('aria-checked', String(r === row));
++				}
++				onChoose(choice);
++				this.accessibilityService.alert(localize('jt.choice.selected', "{0} selected", choice.label));
++			}));
++		}
++		this.setupRadioGroupNavigation(rows, Math.max(0, choices.findIndex(c => c.id === selectedId)));
++	}
++
++	/** A soft square tile with a codicon or a short text ("Aa"), above a page heading. */
++	protected renderTile(container: HTMLElement, content: ThemeIcon | string): void {
++		const tile = append(container, $('.jesutobits-modal-tile'));
++		tile.setAttribute('aria-hidden', 'true');
++		if (typeof content === 'string') {
++			tile.textContent = content;
++		} else {
++			tile.appendChild(renderIcon(content));
++		}
++	}
++
++	/** Buddy, the co-builder, drawn in CSS from the theme's colours. */
++	protected renderBuddy(parent: HTMLElement): void {
++		const buddy = append(parent, $('.jesutobits-buddy'));
++		buddy.setAttribute('aria-hidden', 'true');
++		append(buddy, $('.jesutobits-buddy-antenna'));
++		const face = append(buddy, $('.jesutobits-buddy-face'));
++		append(face, $('i'));
++		append(face, $('i'));
++		append(face, $('span'));
++		const feet = append(buddy, $('.jesutobits-buddy-feet'));
++		append(feet, $('i'));
++		append(feet, $('i'));
++		append(buddy, $('.jesutobits-buddy-orbit'));
++		append(buddy, $('span.jesutobits-buddy-star')).textContent = '+';
++		append(buddy, $('span.jesutobits-buddy-star.star-two')).textContent = '+';
++	}
++
++	/**
++	 * Runs one of the extension's commands. Its prompts (quick input, dialogs) sit below this
++	 * popup's layer, so the popup steps down while they are open; it still dims the workbench.
++	 */
++	protected async runExtensionCommand<T>(run: () => Promise<T | undefined>): Promise<T | undefined> {
++		this.overlay?.classList.add('jesutobits-yield');
++		try {
++			return await run();
++		} catch {
++			// The extension has not started or the command failed; its own log says why.
++			return undefined;
++		} finally {
++			this.overlay?.classList.remove('jesutobits-yield');
++		}
++	}
++
++	/** Something in the popup's frame (not the page) that takes focus, such as a footer link. */
++	protected registerChrome<T extends HTMLElement>(element: T): T {
++		this.chromeFocusable.push(element);
++		return element;
++	}
++
++	protected registerFocusable<T extends HTMLElement>(element: T): T {
++		this.pageFocusable.push(element);
++		return element;
++	}
++
++	/** Arrow keys move between options (roving tabindex), as in VS Code's onboarding. */
++	protected setupRadioGroupNavigation(items: HTMLElement[], selectedIndex: number): void {
++		for (let i = 0; i < items.length; i++) {
++			items[i].setAttribute('tabindex', i === selectedIndex ? '0' : '-1');
++			this.pageDisposables.add(addDisposableListener(items[i], EventType.KEY_DOWN, (e: KeyboardEvent) => {
++				const event = new StandardKeyboardEvent(e);
++				let next: number | undefined;
++				if (event.keyCode === KeyCode.RightArrow || event.keyCode === KeyCode.DownArrow) {
++					next = (i + 1) % items.length;
++				} else if (event.keyCode === KeyCode.LeftArrow || event.keyCode === KeyCode.UpArrow) {
++					next = (i - 1 + items.length) % items.length;
++				} else if (event.keyCode === KeyCode.Home) {
++					next = 0;
++				} else if (event.keyCode === KeyCode.End) {
++					next = items.length - 1;
++				}
++				if (next !== undefined) {
++					e.preventDefault();
++					e.stopPropagation();
++					items[i].setAttribute('tabindex', '-1');
++					items[next].setAttribute('tabindex', '0');
++					items[next].focus();
++					items[next].click();
++				}
++			}));
++		}
++	}
++
++	private trapTab(e: KeyboardEvent, shiftKey: boolean): void {
++		const focusable = this.focusableElements();
++		if (focusable.length === 0) {
++			e.preventDefault();
++			return;
++		}
++		const first = focusable[0];
++		const last = focusable[focusable.length - 1];
++		const active = getActiveWindow().document.activeElement;
++		if (shiftKey && active === first) {
++			e.preventDefault();
++			last.focus();
++		} else if (!shiftKey && active === last) {
++			e.preventDefault();
++			first.focus();
++		}
++	}
++
++	private focusableElements(): HTMLElement[] {
++		// In the order they appear: the left column's list, the close button, the page, the footer.
++		const [close, ...footer] = this.chromeFocusable;
++		const nav = this.pageFocusable.filter(element => element.classList.contains('jesutobits-modal-nav-item'));
++		const page = this.pageFocusable.filter(element => !nav.includes(element));
++		return [...nav, close, ...page, ...footer].filter(element => element && this.isTabbable(element));
++	}
++
++	private focusPage(): void {
++		const first = this.pageFocusable.find(element => !element.classList.contains('jesutobits-modal-nav-item') && this.isTabbable(element));
++		(first ?? this.primaryButton ?? this.closeButton)?.focus();
++	}
++
++	private isTabbable(element: HTMLElement): boolean {
++		if (!element.isConnected || element.tabIndex === -1 || element.hasAttribute('disabled')) {
++			return false;
++		}
++		const style = getActiveWindow().getComputedStyle(element);
++		return style.display !== 'none' && style.visibility !== 'hidden';
++	}
++
++	private removeFromDOM(): void {
++		this.overlay?.remove();
++		this.overlay = undefined;
++		this.asideHero = undefined;
++		this.navList = undefined;
++		this.headerLabel = undefined;
++		this.bodyEl = undefined;
++		this.artEl = undefined;
++		this.titleEl = undefined;
++		this.subtitleEl = undefined;
++		this.contentEl = undefined;
++		this.dotsEl = undefined;
++		this.backButton = undefined;
++		this.primaryButton = undefined;
++		this.closeButton = undefined;
++		this.chromeFocusable.length = 0;
++		this.pageFocusable.length = 0;
++		this.chromeDisposables.clear();
++		this.pageDisposables.clear();
++		this.previouslyFocusedElement?.focus();
++		this.previouslyFocusedElement = undefined;
++	}
++
++	override dispose(): void {
++		this.removeFromDOM();
++		super.dispose();
++	}
++}
++
++const SVG_NS = 'http://www.w3.org/2000/svg';
++
++/** The pixel "J" on a soft tile (the Jesutobits mark), in the theme's accent. */
++export function jMark(document: Document, size: number): HTMLElement {
++	const tile = document.createElement('span');
++	tile.className = 'jesutobits-modal-jmark';
++	tile.style.width = tile.style.height = `${size}px`;
++	tile.setAttribute('aria-hidden', 'true');
++	const svg = document.createElementNS(SVG_NS, 'svg');
++	svg.setAttribute('viewBox', '0 0 32 32');
++	svg.setAttribute('width', String(size - 6));
++	svg.setAttribute('height', String(size - 6));
++	const path = document.createElementNS(SVG_NS, 'path');
++	path.setAttribute('d', 'M8 6h18v6h-5v14H9v-5H4v-7h6v6h5v-8H8z');
++	path.setAttribute('fill', 'currentColor');
++	svg.appendChild(path);
++	tile.appendChild(svg);
++	return tile;
++}
++
++/** OpenRouter's mark (from openrouter.ai), for "Sign in with OpenRouter"; inherits the colour. */
++export function openRouterMark(document: Document, height: number): SVGElement {
++	const svg = document.createElementNS(SVG_NS, 'svg');
++	svg.setAttribute('viewBox', '19.82 17.199 365.556 258.298');
++	svg.setAttribute('width', String(Math.round(height * 1.4)));
++	svg.setAttribute('height', String(height));
++	svg.setAttribute('aria-hidden', 'true');
++	svg.classList.add('jesutobits-openrouter-mark');
++	const path = document.createElementNS(SVG_NS, 'path');
++	path.setAttribute('fill', 'currentColor');
++	path.setAttribute('d', 'M303.9475,17.19926c42.79734,0,77.48933,34.69327,77.48933,77.48933s-34.69199,77.48933-77.48933,77.48933l76.86166,76.86244c9.76367,9.76313,2.84903,26.45667-10.95697,26.45667h-220.88335c-71.32686,0-129.14889-57.82202-129.14889-129.14889S77.64197,17.19926,148.96884,17.19926h154.97866ZM148.96884,68.85881c-42.79607,0-77.48933,34.69327-77.48933,77.48933s34.69327,77.48933,77.48933,77.48933,77.48933-34.69327,77.48933-77.48933-34.69327-77.48933-77.48933-77.48933Z');
++	svg.appendChild(path);
++	return svg;
++}
+diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsOnboarding.ts b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsOnboarding.ts
+index 86a770f..36b108e 100644
+--- a/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsOnboarding.ts
++++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsOnboarding.ts
+@@ -3,24 +3,21 @@
+  *  Built on Microsoft's OnboardingVariationA (MIT) in this folder.
+  *--------------------------------------------------------------------------------------------*/
+ 
+-import { Disposable, DisposableStore } from '../../../../base/common/lifecycle.js';
+ import { Emitter, Event } from '../../../../base/common/event.js';
+-import { $, append, addDisposableListener, EventType, clearNode, getActiveWindow } from '../../../../base/browser/dom.js';
++import { $, append, addDisposableListener, EventType } from '../../../../base/browser/dom.js';
+ import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
+-import { KeyCode } from '../../../../base/common/keyCodes.js';
+-import { StandardKeyboardEvent } from '../../../../base/browser/keyboardEvent.js';
+ import { localize } from '../../../../nls.js';
+ import { Codicon } from '../../../../base/common/codicons.js';
+-import { ThemeIcon } from '../../../../base/common/themables.js';
+-import { renderIcon } from '../../../../base/browser/ui/iconLabel/iconLabels.js';
+ import { ConfigurationTarget, IConfigurationService } from '../../../../platform/configuration/common/configuration.js';
+ import { ICommandService } from '../../../../platform/commands/common/commands.js';
+ import { IAccessibilityService } from '../../../../platform/accessibility/common/accessibility.js';
+ import { IOnboardingService } from '../common/onboardingService.js';
++import { EXPERIENCE_SETTING, IModalCopy, IModalPage, IRadioChoice, JesutobitsCommand, JesutobitsModal, PRESET_SETTING } from './jesutobitsModal.js';
+ 
+ /**
+- * Jesutobits' first-run welcome: VS Code's onboarding modal (`OnboardingVariationA`, whose
+- * styles it reuses) with the Studio steps of the Jesutobits design instead of GitHub sign-in.
++ * Jesutobits' first-run welcome, in the Studio design's two-column popup (jesutobitsModal.ts):
++ * a little hello, the theme, the co-builder (OpenRouter, the model, how much it asks) and the
++ * first idea, instead of VS Code's GitHub sign-in.
+  *
+  * Every choice is real. The theme and the permission level are settings; the OpenRouter key
+  * and the model go through the Jesutobits extension's own commands (Sign in with OpenRouter or
+@@ -28,50 +25,16 @@ import { IOnboardingService } from '../common/onboardingService.js';
+  * put in the agent's message box and never sent for the user.
+  */
+ 
+-const enum StepId {
+-	Hello = 'hello',
+-	Theme = 'theme',
+-	Builder = 'builder',
+-	Idea = 'idea',
+-}
+-
+-const STEPS: readonly StepId[] = [StepId.Hello, StepId.Theme, StepId.Builder, StepId.Idea];
+-
+-/** The extension's commands this modal uses (apps/vscode-extension in the jesutobits repository). */
+-const enum JesutobitsCommand {
+-	HasApiKey = 'jesutobits.hasApiKey',
+-	ConnectOpenRouter = 'jesutobits.connectOpenRouter',
+-	SetApiKey = 'jesutobits.setApiKey',
+-	UseFreeModel = 'jesutobits.useFreeModel',
+-	ChooseModel = 'jesutobits.chooseModel',
+-	Compose = 'jesutobits.compose',
+-	OpenAgent = 'jesutobits.openAgent',
+-	StudioView = 'jesutobits.studio.focus',
+-}
+-
+-const MODEL_SETTING = 'jesutobits.providers.openrouter.defaultModel';
+-/** What `jesutobits.useFreeModel` sets (FREE_CODING_MODEL in the extension). */
+-const FREE_MODEL = 'poolside/laguna-s-2.1:free';
+-const PRESET_SETTING = 'jesutobits.agent.defaultPolicyPreset';
+-const EXPERIENCE_SETTING = 'jesutobits.experience';
+-
+-interface IChoice {
+-	readonly id: string;
+-	readonly label: string;
+-	readonly description: string;
+-	readonly icon: ThemeIcon;
+-}
+-
+-const EXPERIENCES: readonly IChoice[] = [
+-	{ id: 'new', label: localize('jt.experience.new', "Just getting started"), description: localize('jt.experience.new.desc', "My first few steps into programming."), icon: Codicon.sparkle },
+-	{ id: 'some', label: localize('jt.experience.some', "Finding my feet"), description: localize('jt.experience.some.desc', "I've made a few things and want to learn more."), icon: Codicon.compass },
+-	{ id: 'pro', label: localize('jt.experience.pro', "I know my way around"), description: localize('jt.experience.pro.desc', "Less hand-holding, more room to build."), icon: Codicon.rocket },
++export const EXPERIENCES: readonly IRadioChoice[] = [
++	{ id: 'new', label: localize('jt.experience.new', "Just getting started"), description: localize('jt.experience.new.desc', "My first few steps into programming.") },
++	{ id: 'some', label: localize('jt.experience.some', "Finding my feet"), description: localize('jt.experience.some.desc', "I've made a few things and want to learn more.") },
++	{ id: 'pro', label: localize('jt.experience.pro', "I know my way around"), description: localize('jt.experience.pro.desc', "Less hand-holding, more room to build.") },
+ ];
+ 
+-const PRESETS: readonly IChoice[] = [
+-	{ id: 'cautious', label: localize('jt.preset.cautious', "Cautious"), description: localize('jt.preset.cautious.desc', "Asks before every edit and command."), icon: Codicon.shield },
+-	{ id: 'balanced', label: localize('jt.preset.balanced', "Balanced"), description: localize('jt.preset.balanced.desc', "Makes small edits, asks before commands."), icon: Codicon.layoutSidebarRight },
+-	{ id: 'autonomous', label: localize('jt.preset.autonomous', "Autonomous"), description: localize('jt.preset.autonomous.desc', "Works within your limits, still asks before risky steps."), icon: Codicon.rocket },
++export const PRESETS: readonly IRadioChoice[] = [
++	{ id: 'cautious', label: localize('jt.preset.cautious', "Cautious"), description: localize('jt.preset.cautious.desc', "Asks before every edit and command.") },
++	{ id: 'balanced', label: localize('jt.preset.balanced', "Balanced"), description: localize('jt.preset.balanced.desc', "Makes small edits, asks before commands.") },
++	{ id: 'autonomous', label: localize('jt.preset.autonomous', "Autonomous"), description: localize('jt.preset.autonomous.desc', "Works within your limits, still asks before risky steps.") },
+ ];
+ 
+ /** The Studio themes (contributed by the Jesutobits extension) and the colours of their previews. */
+@@ -90,431 +53,189 @@ const IDEAS: readonly { readonly label: string; readonly task: string }[] = [
+ 	{ label: localize('jt.idea.reading', "A reading list"), task: localize('jt.idea.reading.task', "Build a reading list to keep track of books I love.") },
+ ];
+ 
+-function stepTitle(step: StepId): string {
+-	switch (step) {
+-		case StepId.Hello: return localize('jt.hello.title', "You bring the idea. We'll find the way.");
+-		case StepId.Theme: return localize('jt.theme.title', "A space that feels like you");
+-		case StepId.Builder: return localize('jt.builder.title', "A helping hand. You're still in charge.");
+-		case StepId.Idea: return localize('jt.idea.title', "What's your first \"what if\"?");
+-	}
+-}
+-
+-function stepSubtitle(step: StepId): string {
+-	switch (step) {
+-		case StepId.Hello: return localize('jt.hello.subtitle', "You don't have to know all the code to make something you love. Let's make this space feel right for you.");
+-		case StepId.Theme: return localize('jt.theme.subtitle', "Pick a starting mood. Change it any time with Preferences: Color Theme.");
+-		case StepId.Builder: return localize('jt.builder.subtitle', "Your co-builder explains its steps and asks before risky actions. You can always say \"not yet\".");
+-		case StepId.Idea: return localize('jt.idea.subtitle', "A tiny idea is plenty. Describe it in your own words; no technical language needed.");
+-	}
+-}
+-
+-export class JesutobitsOnboarding extends Disposable implements IOnboardingService {
++export class JesutobitsOnboarding extends JesutobitsModal implements IOnboardingService {
+ 
+ 	declare readonly _serviceBrand: undefined;
+ 
+ 	private readonly _onDidDismiss = this._register(new Emitter<void>());
+ 	readonly onDidDismiss: Event<void> = this._onDidDismiss.event;
+ 
+-	private overlay: HTMLElement | undefined;
+-	private progressContainer: HTMLElement | undefined;
+-	private bodyEl: HTMLElement | undefined;
+-	private titleEl: HTMLElement | undefined;
+-	private subtitleEl: HTMLElement | undefined;
+-	private contentEl: HTMLElement | undefined;
+-	private backButton: HTMLButtonElement | undefined;
+-	private nextButton: HTMLButtonElement | undefined;
+-	private closeButton: HTMLButtonElement | undefined;
+-
+-	private currentStepIndex = 0;
+-	private readonly disposables = this._register(new DisposableStore());
+-	private readonly stepDisposables = this._register(new DisposableStore());
+-	private readonly footerFocusableElements: HTMLElement[] = [];
+-	private readonly stepFocusableElements: HTMLElement[] = [];
+-	private previouslyFocusedElement: HTMLElement | undefined;
+-
+ 	private task = '';
+ 
+ 	constructor(
+-		@ILayoutService private readonly layoutService: ILayoutService,
+-		@IConfigurationService private readonly configurationService: IConfigurationService,
+-		@ICommandService private readonly commandService: ICommandService,
+-		@IAccessibilityService private readonly accessibilityService: IAccessibilityService,
++		@ILayoutService layoutService: ILayoutService,
++		@IConfigurationService configurationService: IConfigurationService,
++		@ICommandService commandService: ICommandService,
++		@IAccessibilityService accessibilityService: IAccessibilityService,
+ 	) {
+-		super();
++		super(layoutService, accessibilityService, commandService, configurationService);
+ 	}
+ 
+-	show(): void {
+-		if (this.overlay) {
+-			return;
+-		}
+-
+-		this.previouslyFocusedElement = getActiveWindow().document.activeElement as HTMLElement | undefined;
+-
+-		this.overlay = append(this.layoutService.activeContainer, $('.onboarding-a-overlay.jesutobits-onboarding'));
+-		this.overlay.setAttribute('role', 'dialog');
+-		this.overlay.setAttribute('aria-modal', 'true');
+-		this.overlay.setAttribute('aria-label', localize('jt.aria', "Welcome to Jesutobits"));
+-
+-		const card = append(this.overlay, $('.onboarding-a-card'));
+-
+-		this.closeButton = append(card, $<HTMLButtonElement>('button.onboarding-a-close-btn'));
+-		this.closeButton.type = 'button';
+-		const skip = localize('jt.skip', "Skip for now");
+-		this.closeButton.setAttribute('aria-label', skip);
+-		this.closeButton.title = skip;
+-		this.closeButton.appendChild(renderIcon(Codicon.close));
+-
+-		const header = append(card, $('.onboarding-a-header'));
+-		this.progressContainer = append(header, $('.onboarding-a-progress'));
+-		this._renderProgress();
+-
+-		this.bodyEl = append(card, $('.onboarding-a-body'));
+-		this.titleEl = append(this.bodyEl, $('h2.onboarding-a-step-title'));
+-		this.subtitleEl = append(this.bodyEl, $('p.onboarding-a-step-subtitle'));
+-		this.contentEl = append(this.bodyEl, $('.onboarding-a-step-content'));
+-		this._renderStep();
+-
+-		const footer = append(card, $('.onboarding-a-footer'));
+-		const footerLeft = append(footer, $('.onboarding-a-footer-left'));
+-		append(footerLeft, $('span.jesutobits-onboarding-motto')).textContent = localize('jt.motto', "Big ideas. Small steps. Your pace.");
+-		const footerRight = append(footer, $('.onboarding-a-footer-right'));
+-
+-		this.backButton = append(footerRight, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-secondary'));
+-		this.backButton.type = 'button';
+-		this.backButton.textContent = localize('jt.back', "Back");
+-		this.footerFocusableElements.push(this.backButton);
+-
+-		this.nextButton = append(footerRight, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-primary'));
+-		this.nextButton.type = 'button';
+-		this.footerFocusableElements.push(this.nextButton);
+-		this._updateButtonStates();
+-
+-		this.disposables.add(addDisposableListener(this.closeButton, EventType.CLICK, () => this._dismiss()));
+-		this.disposables.add(addDisposableListener(this.backButton, EventType.CLICK, () => this._goTo(this.currentStepIndex - 1)));
+-		this.disposables.add(addDisposableListener(this.nextButton, EventType.CLICK, () => {
+-			if (this._isLastStep()) {
+-				this._finish();
+-			} else {
+-				this._goTo(this.currentStepIndex + 1);
+-			}
+-		}));
+-
+-		this.disposables.add(addDisposableListener(this.overlay, EventType.KEY_DOWN, (e: KeyboardEvent) => {
+-			const event = new StandardKeyboardEvent(e);
+-			// Keep the workbench's keybindings out while the modal is open.
+-			e.stopPropagation();
+-			if (event.keyCode === KeyCode.Escape) {
+-				e.preventDefault();
+-				this._dismiss();
+-			} else if (event.keyCode === KeyCode.Tab) {
+-				this._trapTab(e, event.shiftKey);
+-			}
+-		}));
+-
+-		this.overlay.classList.add('entering');
+-		getActiveWindow().requestAnimationFrame(() => {
+-			this.overlay?.classList.remove('entering');
+-			this.overlay?.classList.add('visible');
+-		});
+-
+-		this._focusCurrentStepElement();
++	protected copy(): IModalCopy {
++		return {
++			className: 'jesutobits-welcome',
++			ariaLabel: localize('jt.aria', "Welcome to Jesutobits"),
++			header: localize('jt.header', "Let's get you settled"),
++			close: localize('jt.skip', "Skip for now"),
++			note: [localize('jt.note.one', "No experience required."), localize('jt.note.two', "A little curiosity goes a long way.")],
++			freeNavigation: false,
++		};
+ 	}
+ 
+-	private async _finish(): Promise<void> {
++	protected renderHero(container: HTMLElement): void {
++		append(container, $('div.jesutobits-modal-eyebrow')).textContent = localize('jt.eyebrow', "A good place to begin");
++		const headline = append(container, $('div.jesutobits-modal-headline'));
++		append(headline, $('div')).textContent = localize('jt.headline.one', "Big ideas.");
++		append(headline, $('div')).textContent = localize('jt.headline.two', "Small steps.");
++		append(headline, $('div.accent')).textContent = localize('jt.headline.three', "Your pace.");
++		append(container, $('p.jesutobits-modal-tagline')).textContent = localize('jt.tagline', "An AI agent that builds in front of you.");
++	}
++
++	protected pages(): readonly IModalPage[] {
++		return [
++			{
++				label: localize('jt.step.hello', "A little hello"),
++				title: localize('jt.hello.title', "You bring the idea.\nWe'll find the way."),
++				subtitle: localize('jt.hello.subtitle', "You don't have to know all the code to make something you love. Let's make this space feel right for you."),
++				art: container => {
++					const hello = append(container, $('.jesutobits-onboarding-hello'));
++					this.renderBuddy(hello);
++					append(hello, $('p')).textContent = localize('jt.hello.buddy', "Your new co-builder says hello.");
++				},
++				render: container => this.renderRadioRows(container, EXPERIENCES, this.configurationService.getValue<string>(EXPERIENCE_SETTING) ?? undefined, localize('jt.hello.legend', "Where are you starting from?"), choice => {
++					this.configurationService.updateValue(EXPERIENCE_SETTING, choice.id, ConfigurationTarget.USER);
++				}),
++			},
++			{
++				label: localize('jt.step.theme', "Make it yours"),
++				title: localize('jt.theme.title', "A space that\nfeels like you."),
++				subtitle: localize('jt.theme.subtitle', "Pick a starting mood. You can remix every colour later using Themes in the top bar."),
++				art: container => this.renderTile(container, 'Aa'),
++				render: container => this.renderThemes(container),
++			},
++			{
++				label: localize('jt.step.builder', "Meet your co-builder"),
++				title: localize('jt.builder.title', "A helping hand.\nYou're still in charge."),
++				subtitle: localize('jt.builder.subtitle', "Your co-builder explains its steps and asks before risky actions. You can always say \"not yet\"."),
++				render: container => this.renderBuilder(container),
++			},
++			{
++				label: localize('jt.step.idea', "Your first idea"),
++				title: localize('jt.idea.title', "What's your first\n\"what if\"?"),
++				subtitle: localize('jt.idea.subtitle', "A tiny idea is plenty. Describe it in your own words; no technical language needed."),
++				art: container => this.renderTile(container, Codicon.lightbulb),
++				render: container => this.renderIdea(container),
++			},
++		];
++	}
++
++	protected primaryLabel(index: number): string {
++		return index === 0
++			? localize('jt.start', "Let's get started")
++			: index === this.pages().length - 1
++				? localize('jt.finish', "Enter my workspace")
++				: localize('jt.continue', "Continue");
++	}
++
++	protected async finish(): Promise<void> {
+ 		const task = this.task.trim();
+-		await this._runExtensionCommand(() => task
++		await this.runExtensionCommand(() => task
+ 			? this.commandService.executeCommand(JesutobitsCommand.Compose, task)
+ 			: this.commandService.executeCommand(JesutobitsCommand.OpenAgent));
+-		this._dismiss();
++		this.dismiss();
+ 	}
+ 
+-	private _dismiss(): void {
+-		const overlay = this.overlay;
+-		if (!overlay) {
+-			return;
+-		}
+-		overlay.classList.remove('visible');
+-		overlay.classList.add('exiting');
+-
+-		let handled = false;
+-		const onTransitionEnd = () => {
+-			if (handled) {
+-				return;
+-			}
+-			handled = true;
+-			this._removeFromDOM();
+-			this._onDidDismiss.fire();
+-			this._showStudio();
+-		};
+-		overlay.addEventListener('transitionend', onTransitionEnd, { once: true });
+-		setTimeout(onTransitionEnd, 400);
++	protected override onDismissed(): void {
++		this.task = '';
++		this._onDidDismiss.fire();
++		void this.showStudio();
+ 	}
+ 
+ 	/**
+ 	 * The Studio's side bar section starts collapsed (VS Code collapses a new Explorer view),
+ 	 * so the popup opens it, then the agent, once it has closed and focus is free.
+ 	 */
+-	private async _showStudio(): Promise<void> {
+-		await this._runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.StudioView));
+-		await this._runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.OpenAgent));
+-	}
+-
+-	private _goTo(index: number): void {
+-		if (index < 0 || index >= STEPS.length) {
+-			return;
+-		}
+-		this.currentStepIndex = index;
+-		this._renderStep();
+-		this._renderProgress();
+-		this._updateButtonStates();
+-		this._focusCurrentStepElement();
+-	}
+-
+-	private _isLastStep(): boolean {
+-		return this.currentStepIndex === STEPS.length - 1;
+-	}
+-
+-	private _renderProgress(): void {
+-		if (!this.progressContainer) {
+-			return;
+-		}
+-		clearNode(this.progressContainer);
+-		for (let i = 0; i < STEPS.length; i++) {
+-			const dot = append(this.progressContainer, $('span.onboarding-a-progress-dot'));
+-			dot.classList.toggle('active', i === this.currentStepIndex);
+-			dot.classList.toggle('completed', i < this.currentStepIndex);
+-		}
+-		append(this.progressContainer, $('span.onboarding-a-step-label')).textContent =
+-			localize('jt.stepOf', "{0} of {1}", this.currentStepIndex + 1, STEPS.length);
+-	}
+-
+-	private _renderStep(): void {
+-		if (!this.titleEl || !this.subtitleEl || !this.contentEl) {
+-			return;
+-		}
+-		this.stepDisposables.clear();
+-		this.stepFocusableElements.length = 0;
+-
+-		const step = STEPS[this.currentStepIndex];
+-		this.titleEl.textContent = stepTitle(step);
+-		this.subtitleEl.textContent = stepSubtitle(step);
+-		clearNode(this.contentEl);
+-
+-		switch (step) {
+-			case StepId.Hello:
+-				this._renderHello(this.contentEl);
+-				break;
+-			case StepId.Theme:
+-				this._renderThemes(this.contentEl);
+-				break;
+-			case StepId.Builder:
+-				this._renderBuilder(this.contentEl);
+-				break;
+-			case StepId.Idea:
+-				this._renderIdea(this.contentEl);
+-				break;
+-		}
+-
+-		this.bodyEl?.setAttribute('aria-label', localize('jt.step.aria', "Step {0} of {1}: {2}", this.currentStepIndex + 1, STEPS.length, stepTitle(step)));
+-	}
+-
+-	private _updateButtonStates(): void {
+-		if (this.backButton) {
+-			this.backButton.style.display = this.currentStepIndex === 0 ? 'none' : '';
+-		}
+-		if (this.nextButton) {
+-			this.nextButton.textContent = this.currentStepIndex === 0
+-				? localize('jt.start', "Let's get started")
+-				: this._isLastStep()
+-					? localize('jt.finish', "Enter my workspace")
+-					: localize('jt.continue', "Continue");
+-		}
+-	}
+-
+-	// Step 1: a little hello
+-
+-	private _renderHello(container: HTMLElement): void {
+-		const hello = append(container, $('.jesutobits-onboarding-hello'));
+-		this._renderBuddy(hello);
+-		append(hello, $('p')).textContent = localize('jt.hello.buddy', "Your new co-builder says hello.");
+-
+-		const legend = localize('jt.hello.legend', "Where are you starting from?");
+-		append(container, $('div.onboarding-a-section-label')).textContent = legend;
+-		const current = this.configurationService.getValue<string>(EXPERIENCE_SETTING);
+-		this._renderChoices(container, EXPERIENCES, current, legend, choice => {
+-			this.configurationService.updateValue(EXPERIENCE_SETTING, choice.id, ConfigurationTarget.USER);
+-		});
+-	}
+-
+-	/** Buddy, the co-builder, drawn in CSS from the theme's colours. */
+-	private _renderBuddy(parent: HTMLElement): void {
+-		const buddy = append(parent, $('.jesutobits-buddy'));
+-		buddy.setAttribute('aria-hidden', 'true');
+-		append(buddy, $('.jesutobits-buddy-antenna'));
+-		const face = append(buddy, $('.jesutobits-buddy-face'));
+-		append(face, $('i'));
+-		append(face, $('i'));
+-		append(face, $('span'));
+-		const feet = append(buddy, $('.jesutobits-buddy-feet'));
+-		append(feet, $('i'));
+-		append(feet, $('i'));
+-		append(buddy, $('.jesutobits-buddy-orbit'));
+-		append(buddy, $('span.jesutobits-buddy-star')).textContent = '+';
+-		append(buddy, $('span.jesutobits-buddy-star.star-two')).textContent = '+';
++	private async showStudio(): Promise<void> {
++		await this.runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.StudioView));
++		await this.runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.OpenAgent));
+ 	}
+ 
+ 	// Step 2: make it yours
+ 
+-	private _renderThemes(container: HTMLElement): void {
++	private renderThemes(container: HTMLElement): void {
+ 		const current = this.configurationService.getValue<string>('workbench.colorTheme');
+-		const cards: HTMLElement[] = [];
+-		const themeDark = localize('jt.theme.dark', "Cosy & dark");
+-		const themeLight = localize('jt.theme.light', "Light & airy");
+-		for (const light of [false, true]) {
+-			const groupLabel = light ? themeLight : themeDark;
+-			append(container, $('div.onboarding-a-section-label')).textContent = groupLabel;
+-			const grid = append(container, $('.onboarding-a-theme-grid.jesutobits-theme-grid'));
+-			grid.setAttribute('role', 'radiogroup');
+-			grid.setAttribute('aria-label', groupLabel);
+-
+-			for (const theme of THEMES.filter(t => t.light === light)) {
+-				const card = this._registerStepFocusable(append(grid, $('div.onboarding-a-theme-card')));
+-				cards.push(card);
+-				card.setAttribute('role', 'radio');
+-				card.setAttribute('aria-label', theme.name);
+-				const selected = theme.name === current;
+-				card.classList.toggle('selected', selected);
+-				card.setAttribute('aria-checked', String(selected));
+-
+-				// A tiny window in the theme's own colours.
+-				const preview = append(card, $('div.onboarding-a-theme-preview.jesutobits-theme-preview'));
+-				preview.style.background = theme.bg;
+-				const panel = append(preview, $('span'));
+-				panel.style.background = theme.panel;
+-				append(panel, $('i')).style.background = theme.accent;
+-				append(panel, $('i')).style.background = theme.text;
+-				append(card, $('div.onboarding-a-theme-label')).textContent = theme.name;
+-
+-				this.stepDisposables.add(addDisposableListener(card, EventType.CLICK, () => {
+-					// The theme registers when the extension starts; the setting applies it then.
+-					this.configurationService.updateValue('workbench.colorTheme', theme.name, ConfigurationTarget.USER);
+-					for (const c of cards) {
+-						c.classList.toggle('selected', c === card);
+-						c.setAttribute('aria-checked', String(c === card));
+-					}
+-					this.accessibilityService.alert(localize('jt.theme.selected', "{0} theme selected", theme.name));
+-				}));
+-				this.stepDisposables.add(addDisposableListener(card, EventType.KEY_DOWN, (e: KeyboardEvent) => {
+-					if (e.key === 'Enter' || e.key === ' ') {
+-						e.preventDefault();
+-						card.click();
+-					}
+-				}));
+-			}
++		const label = localize('jt.theme.legend', "Your workspace atmosphere");
++		append(container, $('div.jesutobits-modal-label')).textContent = label;
++		const grid = append(container, $('.jesutobits-theme-grid'));
++		grid.setAttribute('role', 'radiogroup');
++		grid.setAttribute('aria-label', label);
++		const cards: HTMLButtonElement[] = [];
++		for (const theme of THEMES) {
++			const card = this.registerFocusable(append(grid, $<HTMLButtonElement>('button.jesutobits-theme-card')));
++			card.type = 'button';
++			cards.push(card);
++			card.setAttribute('role', 'radio');
++			const selected = theme.name === current;
++			card.classList.toggle('selected', selected);
++			card.setAttribute('aria-checked', String(selected));
++
++			// A tiny window in the theme's own colours.
++			const preview = append(card, $('span.jesutobits-theme-preview'));
++			preview.style.background = theme.bg;
++			const side = append(preview, $('span.side'));
++			side.style.background = theme.panel;
++			const lines = append(preview, $('span.lines'));
++			append(lines, $('i')).style.background = theme.text;
++			append(lines, $('i')).style.background = theme.text;
++			append(lines, $('b')).style.background = theme.accent;
++			append(card, $('span.jesutobits-radio')).setAttribute('aria-hidden', 'true');
++			append(card, $('span.jesutobits-theme-name')).textContent = theme.name;
++			append(card, $('span.jesutobits-theme-mood')).textContent = theme.light
++				? localize('jt.theme.light', "Light & airy")
++				: localize('jt.theme.dark', "Cosy & dark");
++
++			this.pageDisposables.add(addDisposableListener(card, EventType.CLICK, () => {
++				// The theme registers when the extension starts; the setting applies it then.
++				this.configurationService.updateValue('workbench.colorTheme', theme.name, ConfigurationTarget.USER);
++				for (const c of cards) {
++					c.classList.toggle('selected', c === card);
++					c.setAttribute('aria-checked', String(c === card));
++				}
++				this.accessibilityService.alert(localize('jt.theme.selected', "{0} theme selected", theme.name));
++			}));
+ 		}
+-		const selectedIndex = THEMES.findIndex(t => t.name === current);
+-		this._setupRadioGroupNavigation(cards, Math.max(0, selectedIndex));
+-		append(container, $('div.onboarding-a-theme-hint')).textContent = localize('jt.theme.note', "Only your workspace changes. Your project keeps its own colours.");
++		this.setupRadioGroupNavigation(cards, Math.max(0, THEMES.findIndex(t => t.name === current)));
++		append(container, $('div.jesutobits-modal-hint')).textContent = localize('jt.theme.note', "Only your workspace changes. Your project keeps its own colours.");
+ 	}
+ 
+ 	// Step 3: meet your co-builder
+ 
+-	private _renderBuilder(container: HTMLElement): void {
+-		const connect = append(container, $('.jesutobits-onboarding-panel'));
+-		const heading = append(connect, $('div.jesutobits-onboarding-panel-title'));
+-		heading.appendChild(renderIcon(Codicon.key));
+-		append(heading, $('span')).textContent = localize('jt.builder.connect', "Connect OpenRouter");
+-		append(connect, $('p')).textContent = localize('jt.builder.connect.desc', "OpenRouter is one account for many AI models. Sign in and allow Jesutobits: there is no key to copy, and the one OpenRouter makes is kept in your system's credential store.");
+-
+-		const keyRow = append(connect, $('.jesutobits-onboarding-row'));
+-		const signInButton = this._registerStepFocusable(append(keyRow, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-primary')));
+-		signInButton.type = 'button';
+-		const pasteButton = this._registerStepFocusable(append(keyRow, $<HTMLButtonElement>('button.jesutobits-onboarding-link')));
+-		pasteButton.type = 'button';
+-		pasteButton.textContent = localize('jt.builder.pasteKey', "I have a key");
+-		const keyStatus = append(connect, $('div.jesutobits-onboarding-status'));
+-		keyStatus.setAttribute('role', 'status');
+-
+-		const modelRow = append(connect, $('.jesutobits-onboarding-row.jesutobits-onboarding-model'));
+-		const freeButton = this._registerStepFocusable(append(modelRow, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-secondary')));
+-		freeButton.type = 'button';
+-		freeButton.textContent = localize('jt.builder.freeModel', "Use the free model");
+-		const modelButton = this._registerStepFocusable(append(modelRow, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-secondary')));
+-		modelButton.type = 'button';
+-		modelButton.textContent = localize('jt.builder.model', "Choose another");
+-		append(connect, $('p.jesutobits-onboarding-note')).textContent = localize('jt.builder.freeModel.note', "The free model is Laguna S 2.1 by Poolside, made for coding. It is free because Poolside may learn from your prompts, so choosing it allows that. Pick a paid model to keep your prompts private.");
+-		const modelStatus = append(connect, $('div.jesutobits-onboarding-status'));
+-		modelStatus.setAttribute('role', 'status');
+-
+-		let waiting = false;
+-		const refresh = async () => {
+-			const hasKey = await this._runExtensionCommand(() => this.commandService.executeCommand<boolean>(JesutobitsCommand.HasApiKey));
+-			signInButton.textContent = hasKey
+-				? localize('jt.builder.signInAgain', "Sign in again")
+-				: localize('jt.builder.signIn', "Sign in with OpenRouter");
+-			signInButton.className = `onboarding-a-btn ${hasKey ? 'onboarding-a-btn-secondary' : 'onboarding-a-btn-primary'}`;
+-			signInButton.disabled = pasteButton.disabled = waiting;
+-			keyStatus.textContent = waiting
+-				? localize('jt.builder.waiting', "Finish in your browser: allow Jesutobits on openrouter.ai.")
+-				: hasKey
+-					? localize('jt.builder.keyStored', "Connected. Your key is stored securely.")
+-					: localize('jt.builder.keyMissing', "Not connected yet. You can do it later from the agent panel.");
+-
+-			const model = this.configurationService.getValue<string | null>(MODEL_SETTING);
+-			const free = model === FREE_MODEL;
+-			freeButton.disabled = modelButton.disabled = !hasKey || waiting;
+-			freeButton.className = `onboarding-a-btn ${hasKey && !model ? 'onboarding-a-btn-primary' : 'onboarding-a-btn-secondary'}`;
+-			modelStatus.textContent = !hasKey
+-				? localize('jt.builder.modelNeedsKey', "Connect first to pick a model.")
+-				: free
+-					? localize('jt.builder.modelFree', "Default model: Laguna S 2.1 (free).")
+-					: model
+-						? localize('jt.builder.modelChosen', "Default model: {0}", model)
+-						: localize('jt.builder.modelNone', "No default model yet.");
+-		};
+-		void refresh();
+-
+-		const run = (button: HTMLButtonElement, command: JesutobitsCommand) => this.stepDisposables.add(addDisposableListener(button, EventType.CLICK, async () => {
+-			waiting = command === JesutobitsCommand.ConnectOpenRouter;
+-			await refresh();
+-			try {
+-				await this._runExtensionCommand(() => this.commandService.executeCommand(command));
+-			} finally {
+-				waiting = false;
+-				await refresh();
+-				button.focus();
+-			}
+-		}));
+-		run(signInButton, JesutobitsCommand.ConnectOpenRouter);
+-		run(pasteButton, JesutobitsCommand.SetApiKey);
+-		run(freeButton, JesutobitsCommand.UseFreeModel);
+-		run(modelButton, JesutobitsCommand.ChooseModel);
+-
+-		const permission = localize('jt.builder.permission', "How much should I check with you?");
+-		append(container, $('div.onboarding-a-section-label')).textContent = permission;
+-		const current = this.configurationService.getValue<string>(PRESET_SETTING) ?? 'balanced';
+-		this._renderChoices(container, PRESETS, current, permission, choice => {
++	private renderBuilder(container: HTMLElement): void {
++		let model: { refresh(): Promise<void> } | undefined;
++		this.renderConnect(container, () => void model?.refresh());
++		model = this.renderModel(container, () => this.hasKey());
++		this.renderRadioRows(container, PRESETS, this.configurationService.getValue<string>(PRESET_SETTING) ?? 'balanced', localize('jt.builder.permission', "How much should I check with you?"), choice => {
+ 			this.configurationService.updateValue(PRESET_SETTING, choice.id, ConfigurationTarget.USER);
+ 		});
+ 	}
+ 
+ 	// Step 4: your first idea
+ 
+-	private _renderIdea(container: HTMLElement): void {
++	private renderIdea(container: HTMLElement): void {
+ 		const chips = append(container, $('.onboarding-a-keymap-list'));
+ 		const field = $<HTMLTextAreaElement>('textarea.jesutobits-onboarding-task');
+ 		for (const idea of IDEAS) {
+-			const chip = this._registerStepFocusable(append(chips, $<HTMLButtonElement>('button.onboarding-a-keymap-pill')));
++			const chip = this.registerFocusable(append(chips, $<HTMLButtonElement>('button.onboarding-a-keymap-pill')));
+ 			chip.type = 'button';
+ 			append(chip, $('span')).textContent = idea.label;
+-			this.stepDisposables.add(addDisposableListener(chip, EventType.CLICK, () => {
++			this.pageDisposables.add(addDisposableListener(chip, EventType.CLICK, () => {
+ 				this.task = idea.task;
+ 				field.value = idea.task;
+ 				field.focus();
+ 			}));
+ 		}
+ 
+-		const label = append(container, $<HTMLLabelElement>('label.onboarding-a-section-label'));
++		const label = append(container, $<HTMLLabelElement>('label.jesutobits-modal-label'));
+ 		label.textContent = localize('jt.idea.field', "Your first task");
+ 		label.htmlFor = 'jesutobits-onboarding-task';
+ 		field.id = 'jesutobits-onboarding-task';
+@@ -523,155 +244,11 @@ export class JesutobitsOnboarding extends Disposable implements IOnboardingServi
+ 		field.placeholder = localize('jt.idea.placeholder', "I'd love to make…");
+ 		field.value = this.task;
+ 		append(container, field);
+-		this._registerStepFocusable(field);
+-		this.stepDisposables.add(addDisposableListener(field, EventType.INPUT, () => {
++		this.registerFocusable(field);
++		this.pageDisposables.add(addDisposableListener(field, EventType.INPUT, () => {
+ 			this.task = field.value;
+ 		}));
+ 
+-		append(container, $('div.onboarding-a-ai-pref-hint')).textContent = localize('jt.idea.ready', "Your task will be waiting in the agent's message box. Nothing runs until you send it.");
+-	}
+-
+-	// Shared pieces
+-
+-	/** Cards that act as one radio group, styled as VS Code's AI-preference cards. */
+-	private _renderChoices(container: HTMLElement, choices: readonly IChoice[], selectedId: string | undefined, label: string, onChoose: (choice: IChoice) => void): void {
+-		const group = append(container, $('.onboarding-a-ai-pref-cards.jesutobits-choices'));
+-		group.setAttribute('role', 'radiogroup');
+-		group.setAttribute('aria-label', label);
+-		const cards: HTMLButtonElement[] = [];
+-		for (const choice of choices) {
+-			const card = this._registerStepFocusable(append(group, $<HTMLButtonElement>('button.onboarding-a-ai-pref-card')));
+-			card.type = 'button';
+-			card.dataset.id = choice.id;
+-			card.setAttribute('role', 'radio');
+-			card.classList.toggle('selected', choice.id === selectedId);
+-			card.setAttribute('aria-checked', String(choice.id === selectedId));
+-			cards.push(card);
+-
+-			const icon = append(card, $('span.onboarding-a-ai-pref-card-icon'));
+-			icon.setAttribute('aria-hidden', 'true');
+-			icon.appendChild(renderIcon(choice.icon));
+-			append(card, $('div.onboarding-a-ai-pref-card-title')).textContent = choice.label;
+-			append(card, $('div.onboarding-a-ai-pref-card-desc')).textContent = choice.description;
+-
+-			this.stepDisposables.add(addDisposableListener(card, EventType.CLICK, () => {
+-				for (const c of cards) {
+-					c.classList.toggle('selected', c === card);
+-					c.setAttribute('aria-checked', String(c === card));
+-				}
+-				onChoose(choice);
+-				this.accessibilityService.alert(localize('jt.choice.selected', "{0} selected", choice.label));
+-			}));
+-		}
+-		this._setupRadioGroupNavigation(cards, Math.max(0, choices.findIndex(c => c.id === selectedId)));
+-	}
+-
+-	/**
+-	 * Runs one of the extension's commands. Its prompts (quick input) sit below this modal's
+-	 * layer, so the modal steps down while they are open; it still dims the workbench.
+-	 */
+-	private async _runExtensionCommand<T>(run: () => Promise<T | undefined>): Promise<T | undefined> {
+-		this.overlay?.classList.add('jesutobits-yield');
+-		try {
+-			return await run();
+-		} catch {
+-			// The extension has not started or the command failed; its own log says why.
+-			return undefined;
+-		} finally {
+-			this.overlay?.classList.remove('jesutobits-yield');
+-		}
+-	}
+-
+-	/** Arrow keys move between options (roving tabindex), as in VS Code's onboarding. */
+-	private _setupRadioGroupNavigation(items: HTMLElement[], selectedIndex: number): void {
+-		for (let i = 0; i < items.length; i++) {
+-			items[i].setAttribute('tabindex', i === selectedIndex ? '0' : '-1');
+-			this.stepDisposables.add(addDisposableListener(items[i], EventType.KEY_DOWN, (e: KeyboardEvent) => {
+-				const event = new StandardKeyboardEvent(e);
+-				let next: number | undefined;
+-				if (event.keyCode === KeyCode.RightArrow || event.keyCode === KeyCode.DownArrow) {
+-					next = (i + 1) % items.length;
+-				} else if (event.keyCode === KeyCode.LeftArrow || event.keyCode === KeyCode.UpArrow) {
+-					next = (i - 1 + items.length) % items.length;
+-				} else if (event.keyCode === KeyCode.Home) {
+-					next = 0;
+-				} else if (event.keyCode === KeyCode.End) {
+-					next = items.length - 1;
+-				}
+-				if (next !== undefined) {
+-					e.preventDefault();
+-					e.stopPropagation();
+-					items[i].setAttribute('tabindex', '-1');
+-					items[next].setAttribute('tabindex', '0');
+-					items[next].focus();
+-					items[next].click();
+-				}
+-			}));
+-		}
+-	}
+-
+-	private _trapTab(e: KeyboardEvent, shiftKey: boolean): void {
+-		const focusable = this._getFocusableElements();
+-		if (focusable.length === 0) {
+-			e.preventDefault();
+-			return;
+-		}
+-		const first = focusable[0];
+-		const last = focusable[focusable.length - 1];
+-		const active = getActiveWindow().document.activeElement;
+-		if (shiftKey && active === first) {
+-			e.preventDefault();
+-			last.focus();
+-		} else if (!shiftKey && active === last) {
+-			e.preventDefault();
+-			first.focus();
+-		}
+-	}
+-
+-	private _getFocusableElements(): HTMLElement[] {
+-		return [...(this.closeButton ? [this.closeButton] : []), ...this.stepFocusableElements, ...this.footerFocusableElements].filter(element => this._isTabbable(element));
+-	}
+-
+-	private _focusCurrentStepElement(): void {
+-		const stepFocusable = this.stepFocusableElements.find(element => this._isTabbable(element));
+-		(stepFocusable ?? this.nextButton ?? this.closeButton)?.focus();
+-	}
+-
+-	private _registerStepFocusable<T extends HTMLElement>(element: T): T {
+-		this.stepFocusableElements.push(element);
+-		return element;
+-	}
+-
+-	private _isTabbable(element: HTMLElement): boolean {
+-		if (!element.isConnected || element.tabIndex === -1 || element.hasAttribute('disabled')) {
+-			return false;
+-		}
+-		const style = getActiveWindow().getComputedStyle(element);
+-		return style.display !== 'none' && style.visibility !== 'hidden';
+-	}
+-
+-	private _removeFromDOM(): void {
+-		this.overlay?.remove();
+-		this.overlay = undefined;
+-		this.progressContainer = undefined;
+-		this.bodyEl = undefined;
+-		this.titleEl = undefined;
+-		this.subtitleEl = undefined;
+-		this.contentEl = undefined;
+-		this.backButton = undefined;
+-		this.nextButton = undefined;
+-		this.closeButton = undefined;
+-		this.footerFocusableElements.length = 0;
+-		this.stepFocusableElements.length = 0;
+-		this.disposables.clear();
+-		this.stepDisposables.clear();
+-		this.currentStepIndex = 0;
+-		this.previouslyFocusedElement?.focus();
+-		this.previouslyFocusedElement = undefined;
+-	}
+-
+-	override dispose(): void {
+-		this._removeFromDOM();
+-		super.dispose();
++		append(container, $('div.jesutobits-modal-hint')).textContent = localize('jt.idea.ready', "Your task will be waiting in the agent's message box. Nothing runs until you send it.");
+ 	}
+ }
+diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css b/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
+index 7a75e6e..a2d3160 100644
+--- a/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
++++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
+@@ -2,80 +2,496 @@
+  *  Copyright (c) Jesutobits. Licensed under the MIT License.
+  *--------------------------------------------------------------------------------------------*/
+ 
+-/* Jesutobits' welcome popup (jesutobitsOnboarding.ts) on VS Code's onboarding modal
+-   (variationA.css). Colours come from the active theme only. */
++/* The Jesutobits popups (jesutobitsModal.ts): the welcome and the account, in the Studio
++   design's two columns on VS Code's onboarding modal (variationA.css). Colours come from the
++   active theme only: the accent is the theme's button and link colour. */
+ 
+-/* While an extension prompt (quick input, z-index 2550) is open, the modal steps below it. */
+-.onboarding-a-overlay.jesutobits-onboarding.jesutobits-yield {
++.jesutobits-modal {
++	--jt-accent: var(--vscode-textLink-foreground, #c5b1f7);
++	--jt-accent-strong: var(--vscode-button-background, #c5b1f7);
++	--jt-accent-soft: color-mix(in srgb, var(--jt-accent) 14%, transparent);
++	--jt-line: var(--vscode-widget-border, rgba(255, 255, 255, 0.09));
++	--jt-muted: var(--vscode-descriptionForeground);
++}
++
++/* While an extension prompt (quick input, a dialog) is open, the popup steps below it. */
++.onboarding-a-overlay.jesutobits-modal.jesutobits-yield {
+ 	z-index: 2500;
+ }
+ 
+-.jesutobits-onboarding .onboarding-a-step-content {
++.jesutobits-modal .onboarding-a-card.jesutobits-modal-card {
++	width: min(1000px, 94vw);
++	height: min(660px, 90vh);
++	display: grid;
++	grid-template-columns: minmax(220px, 280px) 1fr;
++	border-radius: 20px;
++}
++
++/* Left column. */
++.jesutobits-modal-aside {
+ 	display: flex;
+ 	flex-direction: column;
++	min-height: 0;
++	padding: 28px 28px 24px;
++	background: var(--vscode-sideBar-background, var(--vscode-editorWidget-background));
++	border-right: 1px solid var(--jt-line);
++	overflow-y: auto;
++	scrollbar-width: none;
++}
++
++.jesutobits-modal-brand {
++	display: flex;
++	align-items: center;
+ 	gap: 10px;
++	font-size: 20px;
++	font-weight: 600;
++	letter-spacing: -0.01em;
++}
++
++.jesutobits-modal-jmark {
++	display: inline-flex;
++	align-items: center;
++	justify-content: center;
++	flex-shrink: 0;
++	border-radius: 8px;
++	background: var(--jt-accent-soft);
++	color: var(--jt-accent);
++}
++
++.jesutobits-modal-hero {
++	margin-top: 56px;
++}
++
++.jesutobits-modal-eyebrow {
++	font-size: 10.5px;
++	font-weight: 600;
++	letter-spacing: 0.14em;
++	text-transform: uppercase;
++	color: var(--jt-accent);
++}
++
++.jesutobits-modal-headline {
++	margin: 14px 0 0;
++	font-size: 34px;
++	font-weight: 600;
++	line-height: 1.12;
++	letter-spacing: -0.02em;
++}
++
++.jesutobits-modal-headline .accent {
++	color: var(--jt-accent);
++}
++
++.jesutobits-modal-tagline {
++	margin: 16px 0 0;
++	max-width: 190px;
++	color: var(--jt-muted);
++	line-height: 1.55;
++}
++
++.jesutobits-modal-nav {
++	list-style: none;
++	margin: 36px 0 0;
++	padding: 0;
++	display: flex;
++	flex-direction: column;
++	gap: 6px;
++}
++
++.jesutobits-modal-nav-item {
++	display: flex;
++	align-items: center;
++	gap: 12px;
++	width: 100%;
++	padding: 6px 4px;
++	border: none;
++	border-radius: 8px;
++	background: none;
++	color: var(--jt-muted);
++	font: inherit;
++	text-align: left;
++}
++
++button.jesutobits-modal-nav-item {
++	cursor: pointer;
++}
++
++button.jesutobits-modal-nav-item:hover {
++	background: var(--vscode-list-hoverBackground);
++}
++
++button.jesutobits-modal-nav-item:focus-visible {
++	outline: 2px solid var(--vscode-focusBorder);
++	outline-offset: 1px;
++}
++
++.jesutobits-modal-nav-bullet {
++	display: inline-flex;
++	align-items: center;
++	justify-content: center;
++	width: 26px;
++	height: 26px;
++	flex-shrink: 0;
++	border-radius: 50%;
++	border: 1px solid var(--jt-line);
++	font-size: 11px;
++}
++
++.jesutobits-modal-nav .current .jesutobits-modal-nav-item {
++	color: var(--vscode-foreground);
++	font-weight: 600;
++}
++
++.jesutobits-modal-nav .current .jesutobits-modal-nav-bullet {
++	border-color: var(--jt-accent-strong);
++	background: var(--jt-accent-strong);
++	color: var(--vscode-button-foreground);
++}
++
++.jesutobits-modal-nav .done .jesutobits-modal-nav-bullet {
++	border-color: var(--jt-accent);
++	color: var(--jt-accent);
++}
++
++.jesutobits-modal-note {
++	margin-top: auto;
++	padding-top: 24px;
++	font-size: 11px;
++	line-height: 1.6;
++	color: var(--jt-muted);
++}
++
++/* Right column. */
++.jesutobits-modal-main {
++	display: flex;
++	flex-direction: column;
++	min-width: 0;
++	min-height: 0;
++}
++
++.jesutobits-modal-header {
++	display: flex;
++	align-items: center;
++	justify-content: space-between;
++	padding: 24px 28px 0 40px;
++}
++
++.jesutobits-modal-header .jesutobits-modal-eyebrow {
++	color: var(--jt-muted);
++}
++
++.jesutobits-modal-count {
++	color: var(--jt-accent);
++}
++
++.jesutobits-modal-close {
++	display: inline-flex;
++	align-items: center;
++	gap: 8px;
++	padding: 4px 8px;
++	border: none;
++	border-radius: 6px;
++	background: none;
++	color: var(--jt-muted);
++	font: inherit;
++	font-size: 12px;
++	cursor: pointer;
++}
++
++.jesutobits-modal-close:hover {
++	color: var(--vscode-foreground);
++	background: var(--vscode-toolbar-hoverBackground);
++}
++
++.jesutobits-modal-close:focus-visible,
++.jesutobits-modal-back:focus-visible {
++	outline: 2px solid var(--vscode-focusBorder);
++	outline-offset: 1px;
++}
++
++.jesutobits-modal .onboarding-a-body.jesutobits-modal-body {
++	padding: 22px 40px 20px;
+ 	overflow-y: auto;
+-	/* A plain overflow area gets the browser's (white) scrollbar; match the theme's. */
+ 	scrollbar-width: thin;
+ 	scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
+ }
+ 
+-.jesutobits-onboarding .onboarding-a-section-label {
+-	margin-top: 6px;
++.jesutobits-modal-art {
++	margin-bottom: 18px;
+ }
+ 
+-/* Option cards: VS Code's AI-preference cards, made compact enough for two groups a step. */
+-.jesutobits-onboarding .jesutobits-choices .onboarding-a-ai-pref-card {
++.jesutobits-modal .jesutobits-modal-title {
++	margin: 0 0 12px;
++	font-size: 34px;
++	font-weight: 600;
++	line-height: 1.14;
++	letter-spacing: -0.02em;
++	white-space: pre-line;
++}
++
++.jesutobits-modal .jesutobits-modal-subtitle {
++	max-width: 460px;
++	margin: 0 0 8px;
++	padding: 0;
++	border: none;
++	font-size: 13px;
++	line-height: 1.65;
++}
++
++.jesutobits-modal .onboarding-a-step-content {
++	display: flex;
++	flex: none;
++	flex-direction: column;
++	gap: 10px;
++}
++
++.jesutobits-modal-label {
++	display: block;
++	margin: 14px 0 0;
++	font-size: 12.5px;
++	font-weight: 600;
++}
++
++.jesutobits-modal-hint {
++	font-size: 12px;
++	color: var(--jt-muted);
++}
++
++.jesutobits-modal-tile {
++	display: inline-flex;
++	align-items: center;
++	justify-content: center;
++	width: 48px;
++	height: 48px;
++	border-radius: 14px;
++	background: var(--jt-accent-soft);
++	color: var(--jt-accent);
++	font-size: 19px;
++	font-weight: 600;
++}
++
++.jesutobits-modal-tile .codicon {
++	font-size: 22px;
++}
++
++.jesutobits-modal .onboarding-a-footer.jesutobits-modal-footer {
++	display: grid;
++	grid-template-columns: 1fr auto 1fr;
++	align-items: center;
++	padding: 16px 28px 20px 40px;
++	border-top: 1px solid var(--jt-line);
++}
++
++.jesutobits-modal-footer-start {
++	display: flex;
++	align-items: center;
++	gap: 16px;
++}
++
++.jesutobits-modal-back {
++	padding: 4px 2px;
++	border: none;
++	background: none;
++	color: var(--jt-muted);
++	font: inherit;
++	font-size: 12px;
++	cursor: pointer;
++}
++
++.jesutobits-modal-back:hover {
++	color: var(--vscode-foreground);
++}
++
++.jesutobits-modal-dots {
++	display: flex;
++	align-items: center;
+ 	gap: 6px;
+-	padding: 12px 14px;
+ }
+ 
+-.jesutobits-onboarding .jesutobits-choices .onboarding-a-ai-pref-card-icon .codicon {
+-	font-size: 20px;
++.jesutobits-modal-dots > i {
++	width: 6px;
++	height: 6px;
++	border-radius: 3px;
++	background: var(--jt-line);
++	transition: width 0.2s ease;
++}
++
++.jesutobits-modal-dots > i.active {
++	width: 18px;
++	background: var(--jt-accent-strong);
++}
++
++.jesutobits-modal .onboarding-a-btn.jesutobits-modal-primary {
++	justify-self: end;
++	display: inline-flex;
++	align-items: center;
++	gap: 14px;
++	padding: 10px 20px;
++	border-radius: 10px;
++	font-weight: 500;
++}
++
++.jesutobits-modal .onboarding-a-btn:disabled {
++	opacity: 0.5;
++	cursor: not-allowed;
++}
++
++/* Radio rows (the design's choices). */
++.jesutobits-radio-rows {
++	display: flex;
++	flex-direction: column;
++	gap: 10px;
++}
++
++.jesutobits-radio-row {
++	display: flex;
++	align-items: center;
++	gap: 14px;
++	width: 100%;
++	padding: 13px 16px;
++	border: 1px solid var(--jt-line);
++	border-radius: 12px;
++	background: none;
++	color: var(--vscode-foreground);
++	font: inherit;
++	text-align: left;
++	cursor: pointer;
+ }
+ 
+-.jesutobits-onboarding .jesutobits-choices .onboarding-a-ai-pref-card-title {
++.jesutobits-radio-row:hover {
++	background: var(--vscode-list-hoverBackground);
++}
++
++.jesutobits-radio-row.selected {
++	border-color: var(--jt-accent-strong);
++	background: var(--jt-accent-soft);
++}
++
++.jesutobits-radio-row:focus-visible,
++.jesutobits-theme-card:focus-visible {
++	outline: 2px solid var(--vscode-focusBorder);
++	outline-offset: 2px;
++}
++
++.jesutobits-radio {
++	width: 14px;
++	height: 14px;
++	flex-shrink: 0;
++	box-sizing: border-box;
++	border-radius: 50%;
++	border: 1.5px solid var(--jt-muted);
++}
++
++.selected > .jesutobits-radio {
++	border-color: var(--jt-accent-strong);
++	background: var(--jt-accent-strong);
++	box-shadow: inset 0 0 0 2.5px var(--vscode-editor-background);
++}
++
++.jesutobits-radio-text {
++	display: flex;
++	flex-direction: column;
++	gap: 2px;
++}
++
++.jesutobits-radio-title {
+ 	font-size: 13px;
++	font-weight: 600;
+ }
+ 
+-.jesutobits-onboarding .jesutobits-choices .onboarding-a-ai-pref-card-desc {
+-	font-size: 12px;
++.jesutobits-radio-desc {
++	font-size: 11.5px;
++	color: var(--jt-muted);
++}
++
++/* Themes: a small window in each theme's own colours. */
++.jesutobits-theme-grid {
++	display: grid;
++	grid-template-columns: repeat(3, minmax(0, 1fr));
++	gap: 14px;
++}
++
++.jesutobits-theme-card {
++	position: relative;
++	display: flex;
++	flex-direction: column;
++	padding: 8px 8px 12px;
++	border: 1px solid var(--jt-line);
++	border-radius: 14px;
++	background: none;
++	color: var(--vscode-foreground);
++	font: inherit;
++	text-align: left;
++	cursor: pointer;
++}
++
++.jesutobits-theme-card:hover {
++	background: var(--vscode-list-hoverBackground);
++}
++
++.jesutobits-theme-card.selected {
++	border-color: var(--jt-accent-strong);
+ }
+ 
+-/* Theme cards: a small window in each theme's own colours instead of an image. */
+-.jesutobits-onboarding .jesutobits-theme-grid {
+-	grid-template-columns: repeat(4, minmax(0, 1fr));
++.jesutobits-theme-card > .jesutobits-radio {
++	position: absolute;
++	top: 14px;
++	right: 14px;
+ }
+ 
+ .jesutobits-theme-preview {
+-	display: block;
+-	height: 64px;
++	display: flex;
++	gap: 10px;
++	height: 82px;
+ 	padding: 10px;
++	border-radius: 10px;
++	box-sizing: border-box;
++}
++
++.jesutobits-theme-preview .side {
++	width: 26%;
++	border-radius: 6px;
+ }
+ 
+-.jesutobits-theme-preview > span {
++.jesutobits-theme-preview .lines {
+ 	display: flex;
++	flex: 1;
+ 	flex-direction: column;
+ 	gap: 6px;
+-	height: 100%;
+-	padding: 8px;
+-	border-radius: 5px;
+-	box-sizing: border-box;
++	padding-top: 6px;
+ }
+ 
+ .jesutobits-theme-preview i {
+ 	display: block;
+-	height: 6px;
+-	border-radius: 3px;
++	height: 4px;
++	width: 72%;
++	border-radius: 2px;
++	opacity: 0.75;
+ }
+ 
+-.jesutobits-theme-preview i:first-child {
+-	width: 45%;
++.jesutobits-theme-preview i + i {
++	width: 50%;
++	opacity: 0.35;
+ }
+ 
+-.jesutobits-theme-preview i:last-child {
+-	width: 70%;
+-	opacity: 0.35;
++.jesutobits-theme-preview b {
++	display: block;
++	height: 13px;
++	width: 52%;
++	margin-top: 6px;
++	border-radius: 4px;
++}
++
++.jesutobits-theme-name {
++	margin: 10px 4px 0;
++	font-size: 12.5px;
++	font-weight: 600;
++}
++
++.jesutobits-theme-mood {
++	margin: 2px 4px 0;
++	font-size: 11px;
++	color: var(--jt-muted);
+ }
+ 
+ /* Step 1: Buddy says hello. */
+@@ -87,20 +503,21 @@
+ 
+ .jesutobits-onboarding-hello > p {
+ 	margin: 0;
+-	color: var(--vscode-descriptionForeground);
++	font-size: 12px;
++	color: var(--jt-accent);
+ }
+ 
+-/* Step 3: the OpenRouter panel. */
++/* OpenRouter and the model. */
+ .jesutobits-onboarding-panel {
+ 	padding: 14px 16px;
+-	border-radius: 10px;
+-	border: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
++	border-radius: 12px;
++	border: 1px solid var(--jt-line);
+ 	background: var(--vscode-editorWidget-background, var(--vscode-sideBar-background));
+ }
+ 
+ .jesutobits-onboarding-panel > p {
+ 	margin: 4px 0 10px;
+-	color: var(--vscode-descriptionForeground);
++	color: var(--jt-muted);
+ }
+ 
+ .jesutobits-onboarding-panel-title {
+@@ -110,8 +527,9 @@
+ 	font-weight: 600;
+ }
+ 
+-.jesutobits-onboarding-panel-title .codicon {
+-	color: var(--vscode-textLink-foreground);
++.jesutobits-onboarding-panel-title .codicon,
++.jesutobits-onboarding-panel-title .jesutobits-openrouter-mark {
++	color: var(--jt-accent);
+ }
+ 
+ .jesutobits-onboarding-row {
+@@ -122,35 +540,43 @@
+ 	margin-top: 8px;
+ }
+ 
++.jesutobits-signin {
++	display: inline-flex;
++	align-items: center;
++	gap: 8px;
++}
++
+ .jesutobits-onboarding-status {
+ 	margin-top: 6px;
+-	color: var(--vscode-descriptionForeground);
++	color: var(--jt-muted);
+ }
+ 
+-/* "I have a key": a quiet second way in, next to Sign in with OpenRouter. */
++/* A quiet second way ("I have a key", "All settings"). */
+ .jesutobits-onboarding-link {
+ 	padding: 4px 2px;
+ 	border: none;
+ 	background: none;
+-	color: var(--vscode-textLink-foreground);
++	color: var(--jt-accent);
+ 	font: inherit;
+ 	cursor: pointer;
+ }
+ 
+ .jesutobits-onboarding-link:hover:not(:disabled) {
+-	color: var(--vscode-textLink-activeForeground);
+ 	text-decoration: underline;
+ }
+ 
++.jesutobits-onboarding-link.danger {
++	color: var(--vscode-errorForeground);
++}
++
+ .jesutobits-onboarding-link:disabled {
+ 	opacity: 0.5;
+ 	cursor: not-allowed;
+ }
+ 
+-.jesutobits-onboarding-model {
+-	margin-top: 14px;
+-	padding-top: 12px;
+-	border-top: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
++.jesutobits-onboarding-link:focus-visible {
++	outline: 2px solid var(--vscode-focusBorder);
++	outline-offset: 1px;
+ }
+ 
+ .jesutobits-onboarding-panel > p.jesutobits-onboarding-note {
+@@ -158,19 +584,14 @@
+ 	font-size: 12px;
+ }
+ 
+-.jesutobits-onboarding .onboarding-a-btn:disabled {
+-	opacity: 0.5;
+-	cursor: not-allowed;
+-}
+-
+-/* Step 4: the first idea. */
+-.jesutobits-onboarding-task {
++/* Step 4: the first idea; the account's name. */
++.jesutobits-onboarding-task,
++.jesutobits-account-input {
+ 	width: 100%;
+ 	box-sizing: border-box;
+-	resize: vertical;
+ 	padding: 10px 12px;
+-	border-radius: 8px;
+-	border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, transparent));
++	border-radius: 10px;
++	border: 1px solid var(--vscode-input-border, var(--jt-line));
+ 	background: var(--vscode-input-background);
+ 	color: var(--vscode-input-foreground);
+ 	font-family: inherit;
+@@ -178,18 +599,131 @@
+ 	line-height: 1.5;
+ }
+ 
+-.jesutobits-onboarding-task:focus {
++.jesutobits-onboarding-task {
++	resize: vertical;
++}
++
++.jesutobits-onboarding-task:focus,
++.jesutobits-account-input:focus {
+ 	outline: 1px solid var(--vscode-focusBorder);
+ 	outline-offset: -1px;
+ }
+ 
+-.jesutobits-onboarding-task::placeholder {
++.jesutobits-onboarding-task::placeholder,
++.jesutobits-account-input::placeholder {
+ 	color: var(--vscode-input-placeholderForeground);
+ }
+ 
+-.jesutobits-onboarding-motto {
++/* The account. */
++.jesutobits-account-who {
++	display: flex;
++	flex-direction: column;
++	align-items: flex-start;
++	gap: 10px;
++	margin-top: 18px;
++}
++
++.jesutobits-account-name {
++	font-size: 24px;
++	font-weight: 600;
++	letter-spacing: -0.01em;
++	overflow-wrap: anywhere;
++}
++
++.jesutobits-account-status {
++	display: flex;
++	align-items: center;
++	gap: 7px;
+ 	font-size: 12px;
+-	color: var(--vscode-descriptionForeground);
++	color: var(--jt-muted);
++}
++
++.jesutobits-account-status > i {
++	width: 8px;
++	height: 8px;
++	border-radius: 50%;
++	background: var(--jt-muted);
++}
++
++.jesutobits-account-status > i.connected {
++	background: var(--vscode-testing-iconPassed, #89d185);
++}
++
++.jesutobits-account-picture {
++	display: flex;
++	align-items: center;
++	gap: 18px;
++}
++
++.jesutobits-account-facts {
++	display: grid;
++	grid-template-columns: minmax(130px, 180px) 1fr;
++	gap: 8px 16px;
++	margin: 12px 0 4px;
++}
++
++.jesutobits-account-facts dt {
++	color: var(--jt-muted);
++}
++
++.jesutobits-account-facts dd {
++	margin: 0;
++}
++
++/* The avatar: the user's picture or initial, and a dot for the OpenRouter connection. */
++.jesutobits-avatar {
++	position: relative;
++	display: inline-flex;
++	align-items: center;
++	justify-content: center;
++	flex-shrink: 0;
++	border-radius: 50%;
++	background: var(--vscode-button-background, #c5b1f7);
++	color: var(--vscode-button-foreground, #1a1720);
++	font-weight: 600;
++	line-height: 1;
++}
++
++.jesutobits-avatar > img {
++	width: 100%;
++	height: 100%;
++	border-radius: 50%;
++	object-fit: cover;
++}
++
++.jesutobits-avatar-dot {
++	position: absolute;
++	right: -1px;
++	bottom: -1px;
++	width: 28%;
++	height: 28%;
++	min-width: 7px;
++	min-height: 7px;
++	box-sizing: border-box;
++	border-radius: 50%;
++	border: 2px solid var(--vscode-editor-background);
++	background: var(--vscode-descriptionForeground);
++}
++
++.jesutobits-avatar-dot.connected {
++	background: var(--vscode-testing-iconPassed, #89d185);
++}
++
++.monaco-workbench .part.titlebar .action-item.jesutobits-avatar-item {
++	display: flex;
++	align-items: center;
++	padding: 0 6px;
++	cursor: pointer;
++	-webkit-app-region: no-drag;
++}
++
++.monaco-workbench .part.titlebar .jesutobits-avatar-item .jesutobits-avatar-dot {
++	border-color: var(--vscode-titleBar-activeBackground);
++}
++
++.monaco-workbench .part.titlebar .jesutobits-avatar-item:focus-visible {
++	outline: 1px solid var(--vscode-focusBorder);
++	border-radius: 50%;
+ }
+ 
+ /* Buddy, the co-builder (the Studio design's character), in the theme's link colour. */
+diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/welcomeOnboarding.contribution.ts b/src/vs/workbench/contrib/welcomeOnboarding/browser/welcomeOnboarding.contribution.ts
+index 4923135..4e87846 100644
+--- a/src/vs/workbench/contrib/welcomeOnboarding/browser/welcomeOnboarding.contribution.ts
++++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/welcomeOnboarding.contribution.ts
+@@ -7,6 +7,7 @@
+ import './media/variationA.css';
+ import './media/jesutobits.css';
+ import './jesutobitsStudio.js';
++import './jesutobitsAccount.js';
+ 
+ import { localize2 } from '../../../../nls.js';
+ import { Categories } from '../../../../platform/action/common/actionCommonCategories.js';
