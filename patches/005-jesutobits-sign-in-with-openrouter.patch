@@ -1,0 +1,183 @@
+diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsOnboarding.ts b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsOnboarding.ts
+index d1aa805..86a770f 100644
+--- a/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsOnboarding.ts
++++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/jesutobitsOnboarding.ts
+@@ -23,9 +23,9 @@ import { IOnboardingService } from '../common/onboardingService.js';
+  * styles it reuses) with the Studio steps of the Jesutobits design instead of GitHub sign-in.
+  *
+  * Every choice is real. The theme and the permission level are settings; the OpenRouter key
+- * and the model go through the Jesutobits extension's own commands (the key is typed into
+- * VS Code's password box and kept in SecretStorage, never seen here); the first idea is put in
+- * the agent's message box and never sent for the user.
++ * and the model go through the Jesutobits extension's own commands (Sign in with OpenRouter or
++ * VS Code's password box, the key kept in SecretStorage and never seen here); the first idea is
++ * put in the agent's message box and never sent for the user.
+  */
+ 
+ const enum StepId {
+@@ -40,7 +40,9 @@ const STEPS: readonly StepId[] = [StepId.Hello, StepId.Theme, StepId.Builder, St
+ /** The extension's commands this modal uses (apps/vscode-extension in the jesutobits repository). */
+ const enum JesutobitsCommand {
+ 	HasApiKey = 'jesutobits.hasApiKey',
++	ConnectOpenRouter = 'jesutobits.connectOpenRouter',
+ 	SetApiKey = 'jesutobits.setApiKey',
++	UseFreeModel = 'jesutobits.useFreeModel',
+ 	ChooseModel = 'jesutobits.chooseModel',
+ 	Compose = 'jesutobits.compose',
+ 	OpenAgent = 'jesutobits.openAgent',
+@@ -48,6 +50,8 @@ const enum JesutobitsCommand {
+ }
+ 
+ const MODEL_SETTING = 'jesutobits.providers.openrouter.defaultModel';
++/** What `jesutobits.useFreeModel` sets (FREE_CODING_MODEL in the extension). */
++const FREE_MODEL = 'poolside/laguna-s-2.1:free';
+ const PRESET_SETTING = 'jesutobits.agent.defaultPolicyPreset';
+ const EXPERIENCE_SETTING = 'jesutobits.experience';
+ 
+@@ -419,50 +423,72 @@ export class JesutobitsOnboarding extends Disposable implements IOnboardingServi
+ 		const connect = append(container, $('.jesutobits-onboarding-panel'));
+ 		const heading = append(connect, $('div.jesutobits-onboarding-panel-title'));
+ 		heading.appendChild(renderIcon(Codicon.key));
+-		append(heading, $('span')).textContent = localize('jt.builder.connect', "Connect with OpenRouter");
+-		append(connect, $('p')).textContent = localize('jt.builder.connect.desc', "Your key goes into VS Code's password box and the system credential store. Jesutobits never shows it again.");
++		append(heading, $('span')).textContent = localize('jt.builder.connect', "Connect OpenRouter");
++		append(connect, $('p')).textContent = localize('jt.builder.connect.desc', "OpenRouter is one account for many AI models. Sign in and allow Jesutobits: there is no key to copy, and the one OpenRouter makes is kept in your system's credential store.");
+ 
+ 		const keyRow = append(connect, $('.jesutobits-onboarding-row'));
+-		const keyButton = this._registerStepFocusable(append(keyRow, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-primary')));
+-		keyButton.type = 'button';
+-		const keyStatus = append(keyRow, $('span.jesutobits-onboarding-status'));
++		const signInButton = this._registerStepFocusable(append(keyRow, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-primary')));
++		signInButton.type = 'button';
++		const pasteButton = this._registerStepFocusable(append(keyRow, $<HTMLButtonElement>('button.jesutobits-onboarding-link')));
++		pasteButton.type = 'button';
++		pasteButton.textContent = localize('jt.builder.pasteKey', "I have a key");
++		const keyStatus = append(connect, $('div.jesutobits-onboarding-status'));
+ 		keyStatus.setAttribute('role', 'status');
+ 
+-		const modelRow = append(connect, $('.jesutobits-onboarding-row'));
++		const modelRow = append(connect, $('.jesutobits-onboarding-row.jesutobits-onboarding-model'));
++		const freeButton = this._registerStepFocusable(append(modelRow, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-secondary')));
++		freeButton.type = 'button';
++		freeButton.textContent = localize('jt.builder.freeModel', "Use the free model");
+ 		const modelButton = this._registerStepFocusable(append(modelRow, $<HTMLButtonElement>('button.onboarding-a-btn.onboarding-a-btn-secondary')));
+ 		modelButton.type = 'button';
+-		modelButton.textContent = localize('jt.builder.model', "Choose a model");
+-		const modelStatus = append(modelRow, $('span.jesutobits-onboarding-status'));
++		modelButton.textContent = localize('jt.builder.model', "Choose another");
++		append(connect, $('p.jesutobits-onboarding-note')).textContent = localize('jt.builder.freeModel.note', "The free model is Laguna S 2.1 by Poolside, made for coding. It is free because Poolside may learn from your prompts, so choosing it allows that. Pick a paid model to keep your prompts private.");
++		const modelStatus = append(connect, $('div.jesutobits-onboarding-status'));
++		modelStatus.setAttribute('role', 'status');
+ 
++		let waiting = false;
+ 		const refresh = async () => {
+ 			const hasKey = await this._runExtensionCommand(() => this.commandService.executeCommand<boolean>(JesutobitsCommand.HasApiKey));
+-			keyButton.textContent = hasKey
+-				? localize('jt.builder.replaceKey', "Replace my key")
+-				: localize('jt.builder.addKey', "Add my OpenRouter key");
+-			keyButton.className = `onboarding-a-btn ${hasKey ? 'onboarding-a-btn-secondary' : 'onboarding-a-btn-primary'}`;
+-			keyStatus.textContent = hasKey
+-				? localize('jt.builder.keyStored', "Connected. Your key is stored securely.")
+-				: localize('jt.builder.keyMissing', "No key yet. You can add one later from the agent panel.");
+-			modelButton.disabled = !hasKey;
++			signInButton.textContent = hasKey
++				? localize('jt.builder.signInAgain', "Sign in again")
++				: localize('jt.builder.signIn', "Sign in with OpenRouter");
++			signInButton.className = `onboarding-a-btn ${hasKey ? 'onboarding-a-btn-secondary' : 'onboarding-a-btn-primary'}`;
++			signInButton.disabled = pasteButton.disabled = waiting;
++			keyStatus.textContent = waiting
++				? localize('jt.builder.waiting', "Finish in your browser: allow Jesutobits on openrouter.ai.")
++				: hasKey
++					? localize('jt.builder.keyStored', "Connected. Your key is stored securely.")
++					: localize('jt.builder.keyMissing', "Not connected yet. You can do it later from the agent panel.");
++
+ 			const model = this.configurationService.getValue<string | null>(MODEL_SETTING);
++			const free = model === FREE_MODEL;
++			freeButton.disabled = modelButton.disabled = !hasKey || waiting;
++			freeButton.className = `onboarding-a-btn ${hasKey && !model ? 'onboarding-a-btn-primary' : 'onboarding-a-btn-secondary'}`;
+ 			modelStatus.textContent = !hasKey
+-				? localize('jt.builder.modelNeedsKey', "Add your key to see OpenRouter's models.")
+-				: model
+-					? localize('jt.builder.modelChosen', "Default model: {0}", model)
+-					: localize('jt.builder.modelNone', "No default model yet.");
++				? localize('jt.builder.modelNeedsKey', "Connect first to pick a model.")
++				: free
++					? localize('jt.builder.modelFree', "Default model: Laguna S 2.1 (free).")
++					: model
++						? localize('jt.builder.modelChosen', "Default model: {0}", model)
++						: localize('jt.builder.modelNone', "No default model yet.");
+ 		};
+ 		void refresh();
+ 
+-		this.stepDisposables.add(addDisposableListener(keyButton, EventType.CLICK, async () => {
+-			await this._runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.SetApiKey));
+-			await refresh();
+-			keyButton.focus();
+-		}));
+-		this.stepDisposables.add(addDisposableListener(modelButton, EventType.CLICK, async () => {
+-			await this._runExtensionCommand(() => this.commandService.executeCommand(JesutobitsCommand.ChooseModel));
++		const run = (button: HTMLButtonElement, command: JesutobitsCommand) => this.stepDisposables.add(addDisposableListener(button, EventType.CLICK, async () => {
++			waiting = command === JesutobitsCommand.ConnectOpenRouter;
+ 			await refresh();
+-			modelButton.focus();
++			try {
++				await this._runExtensionCommand(() => this.commandService.executeCommand(command));
++			} finally {
++				waiting = false;
++				await refresh();
++				button.focus();
++			}
+ 		}));
++		run(signInButton, JesutobitsCommand.ConnectOpenRouter);
++		run(pasteButton, JesutobitsCommand.SetApiKey);
++		run(freeButton, JesutobitsCommand.UseFreeModel);
++		run(modelButton, JesutobitsCommand.ChooseModel);
+ 
+ 		const permission = localize('jt.builder.permission', "How much should I check with you?");
+ 		append(container, $('div.onboarding-a-section-label')).textContent = permission;
+diff --git a/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css b/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
+index 27df844..7a75e6e 100644
+--- a/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
++++ b/src/vs/workbench/contrib/welcomeOnboarding/browser/media/jesutobits.css
+@@ -123,9 +123,41 @@
+ }
+ 
+ .jesutobits-onboarding-status {
++	margin-top: 6px;
+ 	color: var(--vscode-descriptionForeground);
+ }
+ 
++/* "I have a key": a quiet second way in, next to Sign in with OpenRouter. */
++.jesutobits-onboarding-link {
++	padding: 4px 2px;
++	border: none;
++	background: none;
++	color: var(--vscode-textLink-foreground);
++	font: inherit;
++	cursor: pointer;
++}
++
++.jesutobits-onboarding-link:hover:not(:disabled) {
++	color: var(--vscode-textLink-activeForeground);
++	text-decoration: underline;
++}
++
++.jesutobits-onboarding-link:disabled {
++	opacity: 0.5;
++	cursor: not-allowed;
++}
++
++.jesutobits-onboarding-model {
++	margin-top: 14px;
++	padding-top: 12px;
++	border-top: 1px solid var(--vscode-widget-border, rgba(255, 255, 255, 0.08));
++}
++
++.jesutobits-onboarding-panel > p.jesutobits-onboarding-note {
++	margin: 8px 0 0;
++	font-size: 12px;
++}
++
+ .jesutobits-onboarding .onboarding-a-btn:disabled {
+ 	opacity: 0.5;
+ 	cursor: not-allowed;
