@@ -1,9 +1,11 @@
 // Builds Jesutobits from a prepared vscode/ (scripts/prepare.mjs), for one target:
 //
-//   win32-x64      VSCode-win32-x64/ and dist/JesutobitsUserSetup-x64-<tag>.exe (per-user installer)
-//   linux-x64      VSCode-linux-x64/ and dist/jesutobits-linux-x64-<tag>.{deb,rpm,tar.gz}
-//   darwin-arm64   VSCode-darwin-arm64/Jesutobits.app and dist/Jesutobits-darwin-arm64-<tag>.{dmg,zip}
-//   darwin-x64     the same for Intel Macs
+//   win32-x64      VSCode-win32-x64/ and dist/JesutobitsSetup-<version>-windows-x64.exe (per-user installer)
+//   linux-x64      VSCode-linux-x64/ and dist/jesutobits-<version>-linux-x64.{deb,rpm,tar.gz}
+//   darwin-arm64   VSCode-darwin-arm64/Jesutobits.app and dist/Jesutobits-<version>-macos-arm64.{dmg,zip}
+//   darwin-x64     the same for Intel Macs (macos-x64)
+//
+// <version> is the Jesutobits extension's version when it is built in, else VS Code's tag.
 //
 // Each follows the steps of VS Code's own release pipelines (vscode/build/azure-pipelines).
 // Needs the Node version in vscode/.nvmrc and Python 3; on Windows the MSVC build tools with
@@ -47,6 +49,10 @@ if (process.versions.node !== wanted) {
   throw new Error(`VS Code ${readFileSync(join(source, ".jesutobits-prepared"), "utf8").trim()} builds with Node ${wanted}; this is ${process.versions.node}`);
 }
 const { tag, commit } = JSON.parse(readFileSync(join(root, "upstream.json"), "utf8"));
+const extensionManifest = join(source, "extensions", "jesutobits", "package.json");
+const version = existsSync(extensionManifest)
+  ? JSON.parse(readFileSync(extensionManifest, "utf8")).version
+  : tag;
 
 const env = { ...process.env, VSCODE_ARCH: arch, npm_config_arch: arch };
 // The source is a tarball, not a Git checkout, so the build cannot ask Git for the commit.
@@ -83,7 +89,7 @@ function buildWindows() {
   run("npm run gulp vscode-win32-x64-user-setup");
   // VS Code's Inno Setup script names its output VSCodeSetup.exe (build/win32/code.iss); the
   // installer does not depend on its file name, so it is renamed here rather than patched.
-  const installer = join(dist, `JesutobitsUserSetup-x64-${tag}.exe`);
+  const installer = join(dist, `JesutobitsSetup-${version}-windows-x64.exe`);
   renameSync(join(source, ".build", "win32-x64", "user-setup", "VSCodeSetup.exe"), installer);
   console.log(`Installer: ${installer}`);
 }
@@ -100,7 +106,7 @@ function buildLinux() {
   }
   run(`npm run gulp vscode-linux-${arch}-min`);
   if (args["no-installer"]) return;
-  const name = `jesutobits-linux-${arch}-${tag}`;
+  const name = `jesutobits-${version}-linux-${arch}`;
   run(`npm run gulp vscode-linux-${arch}-prepare-deb`);
   run(`npm run gulp vscode-linux-${arch}-build-deb`);
   moveOnly(join(source, ".build", "linux", "deb", "amd64", "deb"), ".deb", join(dist, `${name}.deb`));
@@ -128,7 +134,7 @@ function buildMac() {
   run(`codesign --force --deep --sign - '${bundle}'`);
   run(`codesign --verify --deep --strict '${bundle}'`);
   if (args["no-installer"]) return;
-  const name = `Jesutobits-darwin-${arch}-${tag}`;
+  const name = `Jesutobits-${version}-macos-${arch}`;
   const zip = join(dist, `${name}.zip`);
   run(`ditto -c -k --sequesterRsrc --keepParent '${bundle}' '${zip}'`);
   console.log(`Package: ${zip}`);

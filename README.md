@@ -15,18 +15,20 @@ What Jesutobits does, and how the agent works, is described in the [`jesutobits`
 
 ## Download
 
-Every push to `main` builds all platforms. Open the latest green run under [Actions](https://github.com/divinefavourak/jesutobits-ide/actions) (you need to be signed in to GitHub) and download the package for your system. Each one is its own download:
+**[Download the latest release](https://github.com/divinefavourak/jesutobits-ide/releases/latest)** and pick the file for your computer:
 
-| Platform | Download | Install |
+| Your computer | File | Install |
 |---|---|---|
-| Windows 10/11 (x64) | `jesutobits-windows-x64-setup` | Run `JesutobitsUserSetup-x64-<version>.exe`. It installs for your user, no admin needed |
-| Linux x64: Debian, Ubuntu | `jesutobits-linux-x64-deb` | `sudo apt install ./jesutobits-linux-x64-<version>.deb` |
-| Linux x64: Fedora, openSUSE | `jesutobits-linux-x64-rpm` | `sudo dnf install ./jesutobits-linux-x64-<version>.rpm` |
-| Linux x64: any distribution | `jesutobits-linux-x64-tar` | Unpack it and run `Jesutobits-linux-x64/jesutobits` |
-| macOS, Apple Silicon (M1 and later) | `jesutobits-darwin-arm64-dmg` (or `-zip`) | Open the disk image and drag Jesutobits to Applications |
-| macOS, Intel | `jesutobits-darwin-x64-dmg` (or `-zip`) | The same |
+| Windows 10/11 (x64) | `JesutobitsSetup-<version>-windows-x64.exe` | Run it. It installs for your user, no admin needed |
+| Ubuntu, Debian | `jesutobits-<version>-linux-x64.deb` | `sudo apt install ./jesutobits-<version>-linux-x64.deb` |
+| Fedora, openSUSE | `jesutobits-<version>-linux-x64.rpm` | `sudo dnf install ./jesutobits-<version>-linux-x64.rpm` |
+| Any Linux (x64) | `jesutobits-<version>-linux-x64.tar.gz` | Unpack it and run `Jesutobits-linux-x64/jesutobits` |
+| Mac with Apple Silicon (M1 and later) | `Jesutobits-<version>-macos-arm64.dmg` (or `.zip`) | Open the disk image and drag Jesutobits to Applications |
+| Mac with Intel | `Jesutobits-<version>-macos-x64.dmg` (or `.zip`) | The same |
 
-GitHub wraps every download in a `.zip`; the package is inside. Builds are kept for 14 days.
+Each release also has `SHA256SUMS.txt`, to check a download. Every [release](https://github.com/divinefavourak/jesutobits-ide/releases) lists what changed.
+
+**Newer than the latest release:** every push to `main` builds all platforms too. Those builds are under [Actions](https://github.com/divinefavourak/jesutobits-ide/actions) (sign in to GitHub to download; each package is its own `.zip`, kept for 14 days).
 
 ### The first open
 
@@ -103,9 +105,11 @@ node scripts/build.mjs --target linux-x64                         # or name the 
 
 | Target | Packages in `dist/` |
 |---|---|
-| `win32-x64` | `JesutobitsUserSetup-x64-<tag>.exe` (per-user installer) |
-| `linux-x64` | `jesutobits-linux-x64-<tag>.deb`, `.rpm` and `.tar.gz` |
-| `darwin-arm64`, `darwin-x64` | `Jesutobits-darwin-<arch>-<tag>.dmg` and `.zip` |
+| `win32-x64` | `JesutobitsSetup-<version>-windows-x64.exe` (per-user installer) |
+| `linux-x64` | `jesutobits-<version>-linux-x64.deb`, `.rpm` and `.tar.gz` |
+| `darwin-arm64`, `darwin-x64` | `Jesutobits-<version>-macos-<arch>.dmg` and `.zip` |
+
+`<version>` is the Jesutobits extension's version when it is built in (0.3.0), else VS Code's tag.
 
 Each target follows the steps of VS Code's own release pipelines (`vscode/build/azure-pipelines`). Mac apps are signed ad hoc, which Apple Silicon needs to run them at all; with an Apple Developer ID, signing and notarising would follow VS Code's `build/azure-pipelines/darwin/codesign.ts`.
 
@@ -121,6 +125,13 @@ Each target follows the steps of VS Code's own release pipelines (`vscode/build/
 | macOS Intel | `macos-15-intel` | `jesutobits-darwin-x64-dmg`, `-zip` |
 
 One platform failing does not stop the others. A build usually takes 15 to 30 minutes, longer when GitHub's runners are busy.
+
+### Releasing
+
+1. In the `jesutobits` repository, set the version (`apps/vscode-extension/package.json`, `packages/runtime/src/version.ts`), add its `CHANGELOG.md` entry, and push a tag `v<version>`.
+2. Here, write `release-notes/v<version>.md` (the text of the release page) and push the same tag `v<version>`.
+
+The tag builds all four platforms from the `jesutobits` tag of the same name; when every build passes, a release job publishes them, with `SHA256SUMS.txt`, as the GitHub release `Jesutobits <version>`.
 
 ## License
 

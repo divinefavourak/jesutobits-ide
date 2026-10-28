@@ -2,6 +2,9 @@
 # Jesutobits extension from the jesutobits repository, built in, and VS Code at
 # upstream.json's tag, patched and rebranded (scripts/prepare.mjs), packaged per platform
 # (scripts/build.mjs). Mac apps are signed ad hoc only: there is no Apple Developer ID yet.
+#
+# A tag v<version> builds the jesutobits repository's tag of the same name and publishes a
+# GitHub release with every package (release-notes/v<version>.md is its text).
 name: Build
 
 on:
@@ -12,6 +15,7 @@ on:
         default: pivot/code-oss
   push:
     branches: [main]
+    tags: ["v*"]
     paths-ignore: ["**.md"]
 
 concurrency:
@@ -41,7 +45,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           repository: divinefavourak/jesutobits
-          ref: ${{ inputs.jesutobits_ref || 'pivot/code-oss' }}
+          ref: ${{ inputs.jesutobits_ref || (github.ref_type == 'tag' && github.ref_name) || 'pivot/code-oss' }}
           path: jesutobits
       - uses: pnpm/action-setup@v6
         with:
@@ -131,3 +135,30 @@ jobs:
           path: dist/*.zip
           compression-level: 0
           retention-days: 14
+
+  # For a tag v<version>: one GitHub release with every platform's packages and their
+  # SHA-256 sums. Runs only when all four builds passed.
+  release:
+    name: Publish the release
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v7
+        with:
+          path: packages
+          merge-multiple: true
+      - name: Checksums
+        working-directory: packages
+        run: sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" packages/* \
+            --verify-tag \
+            --title "Jesutobits ${GITHUB_REF_NAME#v}" \
+            --notes-file "release-notes/$GITHUB_REF_NAME.md"
